@@ -192,3 +192,23 @@ def test_unknown_layout_uses_generic_result_items(workspace, monkeypatch):
     assert stats["saved"] == 1
     row = csv_store.read_rows(settings.recruiters_csv(), csv_store.RECRUITER_FIELDS)[0]
     assert row["recruiter_email"] == "kate@nexgen.io" and row["recruiter_name"] == "Kate Wu"
+
+
+def test_card_disappearing_mid_scrape_is_skipped(browser, monkeypatch):
+    from playwright.sync_api import Error
+
+    context, page, _ = browser
+    linkedin_login.login(context, page, headless=True)
+    real_query = page.query_selector_all
+
+    class Gone:
+        def evaluate(self, *a, **k):
+            raise Error("Element is not attached to the DOM")
+
+    def with_vanished_card(selector):
+        handles = real_query(selector)
+        return [Gone(), *handles] if selector == linkedin_scraper.SELECTORS["card"] else handles
+
+    monkeypatch.setattr(page, "query_selector_all", with_vanished_card)
+    cards = linkedin_scraper.scrape_role(page, "Java Developer", [], max_scrolls=0, pause=(0, 0))
+    assert {"john.smith@techcorp.com", "maria@staffhub.com"} <= {c["emails"][0] for c in cards}

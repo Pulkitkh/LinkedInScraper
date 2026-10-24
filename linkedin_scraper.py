@@ -272,10 +272,13 @@ def scrape_role(page: Page, role: str, exclusions: list[str], max_scrolls: int =
         _expand_see_more(page)
         page.mouse.wheel(0, 2500)
         human_pause(*pause)
-        more = page.query_selector(SELECTORS["show_more_results"])
-        if more and more.is_visible():
-            more.click()
-            human_pause(*pause)
+        try:
+            more = page.query_selector(SELECTORS["show_more_results"])
+            if more and more.is_visible():
+                more.click()
+                human_pause(*pause)
+        except Exception:  # button re-rendered or gone; scrolling continues
+            pass
     _expand_see_more(page)
 
     handles = page.query_selector_all(SELECTORS["card"])
@@ -285,7 +288,11 @@ def scrape_role(page: Page, role: str, exclusions: list[str], max_scrolls: int =
 
     cards: dict[str, dict] = {}
     for handle in handles:
-        data = handle.evaluate(CARD_JS)
+        try:
+            data = handle.evaluate(CARD_JS)
+        except Exception as exc:  # LinkedIn re-rendered the list and this card is gone
+            log.debug("Skipping a card that disappeared: %s", exc)
+            continue
         emails = extract_emails(data["text"], data["mailtos"])
         if not emails:
             continue  # only posts with a recruiter email are useful

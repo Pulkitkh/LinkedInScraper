@@ -30,6 +30,7 @@ import settings
 
 console = Console()
 log = logging.getLogger("main")
+VERBOSE = False  # -v shows full tracebacks
 
 MENU = [
     ("1", "Validate setup (.env, candidates, resumes, browser)"),
@@ -247,8 +248,9 @@ def interactive() -> None:
             elif choice == "9":
                 console.print(analytics.compute_stats())
                 console.print(f"Dashboard: {analytics.export_report()}")
-        except Exception as exc:  # keep the menu alive; full trace in the log
-            log.exception("Action failed: %s", exc)
+        except Exception as exc:  # keep the menu alive; full trace only with -v
+            log.error("Action failed - %s: %s", type(exc).__name__, str(exc).splitlines()[0] if str(exc) else "",
+                      exc_info=VERBOSE)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -262,6 +264,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--yes", action="store_true", help="skip the SEND confirmation in live mode")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
+    global VERBOSE
+    VERBOSE = args.verbose
 
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(message)s",
                         handlers=[RichHandler(console=console, show_path=False)])
