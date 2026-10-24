@@ -33,7 +33,7 @@ ROLE_DOMAINS = {
     "java": r"\bjava\b|\bj2ee\b|spring\s*boot",
     "fullstack": r"full[\s-]?stack",
     "backend": r"back[\s-]?end",
-    "frontend": r"front[\s-]?end|\breact\b|\bangular\b|\bui developer\b",
+    "frontend": r"front[\s-]?end|\breact(?:\.?js)?\b|\bangular(?:\.?js)?\b|\bvue(?:\.?js)?\b|\bui developer\b",
     "python": r"\bpython\b|\bdjango\b",
     "dotnet": r"\.net\b|\bc#",
     "data": r"data scientist|data engineer|machine learning|\bml engineer\b|\bai engineer\b",
@@ -41,13 +41,15 @@ ROLE_DOMAINS = {
     "qa": r"\bqa\b|quality assurance|\bsdet\b|\btester\b|test automation|automation tester",
     "salesforce": r"salesforce|\bsfdc\b",
     "sap": r"\bsap\b",
+    "erp": r"oracle\s+(?:otm|ebs|fusion|apps|cloud|scm|hcm|erp)|\berp\b|workday|servicenow|peoplesoft|netsuite|"
+           r"dynamics\s*365|guidewire|pega\b|mainframe|cobol",
     "business_analyst": r"business analyst|\bba\b",
     "project_manager": r"project manager|scrum master|program manager",
 }
 
 # Domains that define the job on their own: a title containing one of these is a mismatch
 # unless the candidate allows it, even if the title also mentions an allowed technology.
-EXCLUSIVE_DOMAINS = ["qa", "devops", "salesforce", "sap", "business_analyst", "project_manager", "data"]
+EXCLUSIVE_DOMAINS = ["qa", "devops", "salesforce", "sap", "erp", "business_analyst", "project_manager", "data"]
 
 CANDIDATE_ROLES = {
     "java_candidate": {

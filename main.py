@@ -187,35 +187,44 @@ def run_outreach(candidate_key: str, mode: str, limit: int, assume_yes: bool = F
 
 
 def run_batch(mode: str, daily_limit: int, assume_yes: bool = False, headless: bool = True) -> None:
-    """Option 8: one LinkedIn session, then scrape -> filter -> tailor -> send -> log for every candidate."""
+    """Option 8: scrape every candidate (one LinkedIn session), close the browser, then tailor + send + log."""
     keys = client_config.candidate_keys()
     if not confirm_send(mode, daily_limit, assume_yes):
         console.print("Cancelled.")
         return
+    ready = []
+    for key in keys:
+        problems = client_config.validate_candidate(key)
+        if problems:
+            console.print(f"[red]Skipping {key}:[/] " + "; ".join(problems))
+        else:
+            ready.append(key)
+
+    # Phase 1 - LinkedIn. The browser is closed before sending, which can take a while.
     with linkedin_login.browser_context(headless=headless) as (context, page):
         linkedin_login.login(context, page, headless=headless)
-        for key in keys:
-            console.rule(f"[bold]{key}")
-            problems = client_config.validate_candidate(key)
-            if problems:
-                console.print("[red]Skipping:[/] " + "; ".join(problems))
-                continue
+        for key in ready:
+            console.rule(f"[bold]Scraping: {key}")
             try:
                 linkedin_scraper.scrape_candidate(key, page=page)
             except Exception as exc:  # one bad search must not stop the other candidates
-                log.exception("Scraping failed for %s: %s", key, exc)
-            budget = remaining_today(daily_limit) if mode == "live" else daily_limit
-            if budget <= 0:
-                console.print("[yellow]Daily limit reached; scraping only.[/]")
-                continue
-            rows = linkedin_scraper.pending_recruiters(key)
-            console.print(f"{len(rows)} pending recruiter(s); sending up to {budget}")
-            if rows:
-                report = gmail_sender.send_outreach(key, mode=mode, limit=budget, recruiters=rows)
-                show_report(key, report)
-                if report.aborted:
-                    console.print("[red]Stopping the batch - fix the problem above and run again.[/]")
-                    break
+                log.error("Scraping failed for %s: %s", key, str(exc).splitlines()[0] if str(exc) else exc)
+
+    # Phase 2 - email.
+    for key in ready:
+        console.rule(f"[bold]Outreach: {key}")
+        budget = remaining_today(daily_limit) if mode == "live" else daily_limit
+        if budget <= 0:
+            console.print("[yellow]Daily limit reached.[/]")
+            break
+        rows = linkedin_scraper.pending_recruiters(key)
+        console.print(f"{len(rows)} pending recruiter(s); sending up to {budget}")
+        if rows:
+            report = gmail_sender.send_outreach(key, mode=mode, limit=budget, recruiters=rows)
+            show_report(key, report)
+            if report.aborted:
+                console.print("[red]Stopping the batch - fix the problem above and run again.[/]")
+                break
     console.print(f"Analytics: {analytics.export_report()}")
 
 

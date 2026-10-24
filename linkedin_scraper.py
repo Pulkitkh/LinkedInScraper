@@ -198,14 +198,38 @@ def is_bench_marketing(text: str) -> bool:
     return any(phrase in lowered for phrase in client_config.BENCH_MARKETING_PHRASES)
 
 
+_TITLE_PREFIX_RE = re.compile(
+    r"^(?:(?:urgent(?:ly)?|immediate(?:ly)?|now|actively|we(?:'re| are)?)\s+)*"
+    r"(?:hiring|requirement|opening|looking for|need(?:ed)?|job\s*title|title|role|position)"
+    r"(?:\s+for)?(?:\s+an?)?\s*[:\-–—!]*\s+", re.I)
+_TITLE_TAIL_RE = re.compile(r"\s(?:c2c|w-?2|1099|corp[\s-]to[\s-]corp|remote|onsite|on-site|hybrid)\b", re.I)
+
+
+def clean_job_title(raw: str) -> str:
+    """'🚨 **HIRING: JAVA DEVELOPER | 5 OPEN POSITIONS** 🚨' -> 'Java Developer'. Empty if it isn't a title."""
+    t = re.sub(r"(?<![\w])#\w+", " ", raw)                      # hashtags (keeps C#)
+    t = "".join(ch if ch.isalnum() or ch.isspace() or ch in ".,/&+()-–—|:'#" else " " for ch in t)
+    t = " ".join(t.split())
+    t = re.sub(r"^\d+\s*[.)]\s*", "", t)                        # "3." / "1)" numbering
+    for _ in range(2):
+        t = _TITLE_PREFIX_RE.sub("", t).strip()
+    t = re.split(r"\s*[|–—]\s*|\s+-\s+|\s\(|,|:", t)[0]      # drop " | Onsite", " – Charlotte, NC", ...
+    tail = _TITLE_TAIL_RE.search(t)
+    if tail and _TITLE_WORDS_RE.search(t[:tail.start()]):
+        t = t[:tail.start()]
+    t = " ".join(t.split()).strip(" -/&").rstrip(".")  # keep a leading ".NET"
+    if t.isupper():
+        t = " ".join(w if len(w) <= 3 else w.capitalize() for w in t.split())
+    return t[:80] if len(t) >= 4 and _TITLE_WORDS_RE.search(t) else ""
+
+
 def detect_job_title(text: str) -> str:
     m = _TITLE_LABEL_RE.search(text)
-    if m:
-        return m.group(1).strip()[:120]
+    if m and (title := clean_job_title(m.group(1))):
+        return title
     for line in text.splitlines():
-        line = re.sub(r"#\w+", "", line).strip(" -–:|•*")
-        if line and len(line) <= 120 and _TITLE_WORDS_RE.search(line):
-            return line
+        if len(line) <= 160 and (title := clean_job_title(line)):
+            return title
     return ""
 
 
@@ -213,17 +237,23 @@ def domains_in(text: str) -> set[str]:
     return {name for name, pattern in client_config.ROLE_DOMAINS.items() if re.search(pattern, text, re.I)}
 
 
+_GENERIC_TITLE_RE = re.compile(r"\b(?:software|application|applications|programmer|developer|engineer)\b", re.I)
+
+
 def role_mismatch(text: str, candidate: dict) -> bool:
-    """True when the declared job title targets a domain the candidate doesn't do (e.g. QA for a Java dev)."""
+    """True when the declared job title targets work the candidate doesn't do (e.g. QA or Oracle OTM for Java)."""
     allowed = set(candidate.get("allowed_domains", []))
     if not allowed:
         return False
-    title_domains = domains_in(detect_job_title(text))
+    title = detect_job_title(text)
+    title_domains = domains_in(title)
     if (title_domains & set(client_config.EXCLUSIVE_DOMAINS)) - allowed:
         return True  # e.g. "QA Tester - Java" is a QA role even though it mentions Java
     if title_domains:
         return not (title_domains & allowed)
-    return not (domains_in(text) & allowed)
+    if title and not _GENERIC_TITLE_RE.search(title):
+        return True  # a specific title with none of the candidate's skills, e.g. "Solution Architect"
+    return not (domains_in(text) & allowed)  # generic or no title: the post body must mention the skills
 
 
 def matches_strict_filter(text: str, candidate: dict) -> tuple[str | None, str]:
@@ -444,18 +474,34 @@ def scrape_candidate(candidate_key: str, page: Page | None = None, headless: boo
 
 
 def pending_recruiters(candidate_key: str) -> list[dict]:
-    """Recruiter rows for this candidate's roles that this candidate hasn't emailed yet."""
+    """Recruiter rows for this candidate's roles that this candidate hasn't emailed yet.
+
+    The strict filters run again here, so rows saved before a filter improvement are re-checked too;
+    rows that now count as a role mismatch are marked mismatched_role in recruiters.csv.
+    """
     candidate = client_config.get_candidate(candidate_key)
     roles = {r.lower() for r in candidate["search_roles"]}
     contacted = {r["recruiter_email"].lower()
                  for r in csv_store.read_rows(settings.history_csv(), csv_store.HISTORY_FIELDS)
                  if r["candidate"] == candidate["name"] and r["email_sent_status"] == "sent"}
     seen: set[str] = set()
-    rows = []
+    rows, newly_mismatched = [], set()
     for row in csv_store.read_rows(settings.recruiters_csv(), csv_store.RECRUITER_FIELDS):
         email = row["recruiter_email"].lower()
-        if (row["role"].lower() in roles and row["email_sent_status"] != "mismatched_role"
-                and email not in contacted and email not in seen):
-            seen.add(email)
-            rows.append(row)
+        if (row["role"].lower() not in roles or row["email_sent_status"] == "mismatched_role"
+                or email in contacted or email in seen):
+            continue
+        status, _ = matches_strict_filter(row["job_description"], candidate)
+        if status != "pending":
+            if status == "mismatched_role":
+                newly_mismatched.add((email, row["post_url"]))
+            continue
+        seen.add(email)
+        rows.append(row)
+    if newly_mismatched:
+        csv_store.update_rows(
+            settings.recruiters_csv(), csv_store.RECRUITER_FIELDS,
+            lambda r: (r["recruiter_email"].lower(), r["post_url"]) in newly_mismatched,
+            {"email_sent_status": "mismatched_role"})
+        log.info("%d saved post(s) re-checked and marked mismatched_role", len(newly_mismatched))
     return rows

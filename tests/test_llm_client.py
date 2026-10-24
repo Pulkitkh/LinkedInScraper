@@ -4,13 +4,6 @@ import requests
 import llm_client
 
 
-@pytest.fixture(autouse=True)
-def fresh_models():
-    llm_client._resolved.clear()
-    yield
-    llm_client._resolved.clear()
-
-
 class Resp:
     def __init__(self, status, data):
         self.status_code, self._data = status, data
@@ -126,7 +119,10 @@ def test_chain_falls_back_gemini_to_groq(monkeypatch):
     keys(monkeypatch, gemini="g", groq="q")
     http = FakeHTTP({":generateContent": Resp(500, "backend error"), "groq.com": chat_ok('{"ok": true}')})
     assert llm_client.generate("sys", "p", llm_client.CUSTOMIZE_CHAIN, want_json=True, http=http) == {"ok": True}
-    groq_kwargs = http.calls[1][2]
+    assert [c[1].split("/")[-1] for c in http.calls[:3]] == [
+        "gemini-flash-latest:generateContent", "gemini-flash-lite-latest:generateContent",
+        "gemini-2.5-flash-lite:generateContent"]  # overloaded: lighter Gemini models first
+    groq_kwargs = http.calls[-1][2]
     assert groq_kwargs["headers"]["Authorization"] == "Bearer q"
     assert groq_kwargs["json"]["response_format"] == {"type": "json_object"}
 

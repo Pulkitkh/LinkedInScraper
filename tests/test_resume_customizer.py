@@ -65,7 +65,7 @@ def test_customize_falls_back_to_original_when_ai_unavailable(workspace):
 
     resume = workspace / "jane_resume.docx"
     result = rc.customize(resume, JD, "Java Developer", {"name": "Jane Doe"}, generate=failing)
-    assert not result.customized and "skipped" in result.note
+    assert not result.customized and "AI unavailable" in result.note
     assert result.path.exists()
 
 

@@ -140,9 +140,12 @@ def test_followups_stop_on_bad_credentials(workspace):
     assert csv_store.read_rows(settings.history_csv(), csv_store.HISTORY_FIELDS)[0]["followup_count"] == "0"
 
 
-@pytest.mark.parametrize("name,greeting", [("", "Hi there,"), ("  ", "Hi there,"), ("mary-ann o'neil", "Hi Mary-ann,")])
-def test_odd_recruiter_names_and_braces_in_jd(workspace, tailored, name, greeting):
-    rec = {**recruiter(), "recruiter_name": name, "job_description": "Java {Spring} C2C ${salary} %s Dallas, TX"}
+@pytest.mark.parametrize("name,email,greeting", [
+    ("", "jobs@x.com", "Hi there,"), ("  ", "john@techcorp.com", "Hi there,"),
+    ("mary-ann o'neil", "maryann.oneil@x.com", "Hi Mary-ann,")])
+def test_odd_recruiter_names_and_braces_in_jd(workspace, tailored, name, email, greeting):
+    rec = {**recruiter(email), "recruiter_name": name,
+           "job_description": "Java {Spring} C2C ${salary} %s Dallas, TX"}
     server = FakeSMTP()
     gs.send_outreach("jane", mode="test", recruiters=[rec], smtp_factory=lambda: server, sleep=lambda s: None,
                      customize=tailored)

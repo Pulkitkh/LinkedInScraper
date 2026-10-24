@@ -34,7 +34,7 @@ Open `.env` and fill in these values:
 | `GEMINI_API_KEY` | Free key from https://aistudio.google.com/apikey. Keep `GEMINI_MODEL=gemini-flash-latest`. If a model name in `.env` has been retired, the tool picks a current model automatically and tells you which one to set. |
 | `BROWSER_CHANNEL` | Optional. `msedge` or `chrome` uses your installed browser, which LinkedIn trusts more. |
 | `SHOW_BROWSER` | Optional. `true` lets you watch the browser search LinkedIn. Recommended for demos. Otherwise scraping runs invisibly in the background. |
-| `GROQ_API_KEY`, `OPENROUTER_API_KEY` | Optional fallbacks if Gemini fails. |
+| `GROQ_API_KEY`, `OPENROUTER_API_KEY` | Optional fallbacks if Gemini fails. **Recommended:** a free Groq key from https://console.groq.com/keys keeps resumes tailored when Gemini is overloaded. |
 | `TEAM_LEAD_EMAIL`, `ADMIN_EMAIL` | Optional. Copied (CC) and blind-copied (BCC) on every outreach email. |
 
 Then add your candidates in `client_config.py` (spec section 8.1), and put each resume in `clients/`. A `.docx` resume works best. A sample candidate and resume are included, so everything works out of the box.
@@ -62,7 +62,7 @@ Every row should say **PASS**: Gmail SMTP, Gmail IMAP, at least one AI provider,
 | 7 | **6** Follow-ups | Recruiters with no reply after 7 days get a threaded "Re:" follow-up. | Gmail shows one thread |
 | 8 | **7** Check replies | Scans the inbox and sets `replied=1` for recruiters who answered. | History CSV |
 | 9 | **9** Analytics | Prints stats and writes `analytics_report.html`, a dark-themed dashboard. | Open the HTML |
-| 10 | **8** Batch mode | Does steps 3→6 for **every** candidate, using one browser session and a global daily limit. | Console summary |
+| 10 | **8** Batch mode | Scrapes for **every** candidate in one browser session, closes the browser, then tailors resumes and sends emails within a global daily limit. | Console summary |
 
 Commands you can schedule (for example with Windows Task Scheduler):
 
@@ -123,6 +123,8 @@ main.py ─► linkedin_login.py ─────► session.json
 1. A PDF resume is first converted to DOCX with pdf2docx.
 2. The **Summary**, **Experience/Projects** bullets and **Technical Skills** sections are found, including skills inside tables. Company, client and date lines are left untouched.
 3. These sections are sent with the job description to Gemini, falling back to Groq and then OpenRouter. The AI returns `rewritten_summary`, `rewritten_paragraphs` and `rewritten_skills` as JSON.
+   - If Gemini is overloaded (503) or slow (more than 45 s), the lighter `gemini-flash-lite-latest` model is tried next.
+   - After 2 failed requests in a row, a provider is skipped for 10 minutes, so you never wait on it for every email.
 4. The new text is written back run-by-run, keeping fonts, sizes, bold/italic, colours and labels like `Languages:`. Any rewrite with an unknown ID, empty text or an unreasonable length is ignored.
 5. The DOCX is converted to PDF: MS Word on Windows/macOS, with a mutex lock and a retry after killing a hung Word process, or LibreOffice otherwise.
 6. **If anything fails** (no AI key, AI error, conversion crash), the original resume is attached and the run continues.
@@ -158,6 +160,7 @@ main.py ─► linkedin_login.py ─────► session.json
 | "recruiters.csv is locked" | Close the CSV in Excel and run again. Nothing was lost. |
 | Scraping finds 0 posts | Open `scratch/search_debug_<role>.png` to see what LinkedIn showed. If it lists posts with visible emails, send that file and the `.html` so the extraction can be adjusted. |
 | You don't see a browser during scraping | That's the default: it runs invisibly in the background. Set `SHOW_BROWSER=true` in `.env`, answer `y` to "Show the browser window?", or run `python main.py --batch --show-browser`. |
+| `gemini ... high demand` / `did not answer within 45s` | Google is overloaded. The tool falls back to the Lite model and then to Groq or OpenRouter if you've set their keys. Otherwise the original resume is attached and sending continues. |
 | You want the full error details | Run `python main.py -v`. |
 
 ### Data files (spec section 4)
@@ -196,7 +199,7 @@ pip install -r requirements.txt
 pytest
 ```
 
-There are 142 tests, and none of them need network access:
+There are 183 tests, and none of them need network access:
 
 - **Demo walkthrough:** drives the real menu through options 2→3→4→5 (test)→5 (live)→6→7→8→9→1. Only LinkedIn, Gmail and the inbox are simulated.
 - **Browser tests** against a mock LinkedIn page:
@@ -214,6 +217,10 @@ There are 142 tests, and none of them need network access:
   - resume crash fallback, corrupt resume
   - CSV files saved by Excel (UTF-8 with BOM, and ANSI), a CSV locked by Excel
   - Windows Word retry, LibreOffice timeout, English IMAP dates on any locale
+- **Regression tests from the first live run:**
+  - Gemini 503 overload and timeouts, the Lite fallback, the 10-minute cool-down
+  - real job titles (emoji, numbering, "HIRING:"), ReactJS / Oracle OTM mismatches
+  - greetings for the real recipients, the browser closing before emails are sent
 - **15 realistic LinkedIn C2C posts** (requirements, hotlists, India/Canada/UK posts, QA/DevOps/Salesforce titles), each with its expected outcome.
 - **Real document and mail tests:**
   - real DOCX→PDF conversion, checking that the tailored text is in the PDF

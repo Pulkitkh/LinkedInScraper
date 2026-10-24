@@ -76,6 +76,40 @@ def first_name(name: str) -> str:
     return parts[0].capitalize() if parts else "there"
 
 
+GENERIC_MAILBOXES = {
+    "jobs", "job", "careers", "career", "hr", "info", "recruit", "recruiter", "recruiters", "recruiting",
+    "recruitment", "talent", "hiring", "jobsearch", "resume", "resumes", "sales", "contact", "admin", "team",
+    "support", "staffing", "apply", "hello", "office", "mail", "submissions", "bench", "vendor", "vendors",
+    "opportunities", "requirements", "reqs", "hiringteam", "usjobs", "itjobs", "work", "people",
+}
+_COMPANY_WORDS = re.compile(r"\b(?:inc|llc|ltd|corp|solutions|systems|technologies|technology|tech|consulting|"
+                            r"staffing|group|software|labs|digital|global|services|infotech|it)\b", re.I)
+
+
+def greeting_name(recruiter_name: str, email: str) -> str:
+    """Name for "Hi ...,": the poster's first name when the email is theirs, a name from the email address
+    when the post came from a company page, otherwise "there" (never "Hi Nexylum," or "Hi K,")."""
+    local, _, domain = email.lower().partition("@")
+    tokens = [t for t in re.split(r"[^a-z]+", local) if len(t) >= 3]
+    personal = [t for t in tokens if t not in GENERIC_MAILBOXES]
+    generic_mailbox = not personal
+    separated = bool(re.search(r"[._-]", local))
+    first = re.sub(r"[^A-Za-z'-]", "", recruiter_name.split()[0]) if recruiter_name.split() else ""
+    domain_name = re.sub(r"[^a-z]", "", domain.rsplit(".", 1)[0])
+    is_company = bool(first) and (
+        (len(first) >= 3 and first.lower() in domain_name) or bool(_COMPANY_WORDS.search(recruiter_name)))
+
+    name_parts = [re.sub(r"[^a-z]", "", w.lower()) for w in recruiter_name.split()]
+    name_in_email = any(len(w) >= 3 and w in local for w in name_parts)
+    if len(first) >= 2 and not is_company:
+        if name_in_email or generic_mailbox:
+            return first.capitalize()
+        return personal[0].capitalize() if separated else "there"
+    if is_company and personal and len(personal[0]) <= 12:
+        return personal[0].capitalize()
+    return personal[0].capitalize() if separated and personal else "there"
+
+
 def load_template(name: str) -> tuple[str | None, str]:
     """Return (subject or None, body). A template's first line may be 'Subject: ...'."""
     raw = (TEMPLATES / name).read_text(encoding="utf-8")
@@ -95,7 +129,8 @@ def render(template: str, values: dict) -> str:
 def template_values(recruiter: dict, candidate: dict, **extra) -> dict:
     values = {
         "recruiter_name": recruiter.get("recruiter_name", ""),
-        "recruiter_first_name": first_name(recruiter.get("recruiter_name", "")),
+        "recruiter_first_name": greeting_name(recruiter.get("recruiter_name", ""),
+                                              recruiter.get("recruiter_email", "")),
         "role": recruiter.get("role") or candidate["primary_role"],
         "job_title": detect_job_title(recruiter.get("job_description", "")) or recruiter.get("role")
                      or candidate["primary_role"],

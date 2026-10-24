@@ -60,7 +60,9 @@ def browser_context(headless: bool = True, use_session: bool = True):
 
     BROWSER_CHANNEL=msedge or chrome uses your installed Edge/Chrome instead of Playwright's Chromium.
     """
-    with sync_playwright() as pw:
+    pw = sync_playwright().start()
+    browser = None
+    try:
         launch = {"headless": headless, "slow_mo": 0 if headless else 50,
                   "args": ["--disable-blink-features=AutomationControlled"]}
         if exe := settings.env("CHROMIUM_EXECUTABLE"):
@@ -70,19 +72,24 @@ def browser_context(headless: bool = True, use_session: bool = True):
         browser = pw.chromium.launch(**launch)
         opts = {"user_agent": _user_agent(browser.version), "viewport": {"width": 1366, "height": 900},
                 "locale": "en-US"}
-        try:
-            if use_session and settings.session_file().exists():
-                try:
-                    context = browser.new_context(storage_state=str(settings.session_file()), **opts)
-                except Exception as exc:  # corrupt/edited session.json: start clean, log in again
-                    log.warning("Ignoring unreadable session.json (%s)", exc)
-                    context = browser.new_context(**opts)
-            else:
+        if use_session and settings.session_file().exists():
+            try:
+                context = browser.new_context(storage_state=str(settings.session_file()), **opts)
+            except Exception as exc:  # corrupt/edited session.json: start clean, log in again
+                log.warning("Ignoring unreadable session.json (%s)", exc)
                 context = browser.new_context(**opts)
-            context.grant_permissions(["clipboard-read", "clipboard-write"], origin=LINKEDIN)
-            yield context, context.new_page()
-        finally:
-            browser.close()
+        else:
+            context = browser.new_context(**opts)
+        context.grant_permissions(["clipboard-read", "clipboard-write"], origin=LINKEDIN)
+        yield context, context.new_page()
+    finally:
+        # The window may have been closed by hand or the driver may be gone; cleanup must never fail the run.
+        for close in ((browser.close if browser else None), pw.stop):
+            if close:
+                try:
+                    close()
+                except Exception as exc:
+                    log.debug("Ignoring error while closing the browser: %s", exc)
 
 
 def has_session_cookie(page: Page) -> bool:

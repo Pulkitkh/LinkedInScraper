@@ -9,6 +9,16 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import client_config  # noqa: E402
+import llm_client  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def fresh_ai_state(monkeypatch):
+    """No discovered models, failure counts or cool-downs carry over between tests; no real sleeps."""
+    llm_client.reset()
+    monkeypatch.setattr(llm_client, "_sleep", lambda s: None)
+    yield
+    llm_client.reset()
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import logging
 import re
@@ -234,7 +236,7 @@ def docx_to_pdf(docx_path: Path) -> Path | None:
             try:
                 from docx2pdf import convert
 
-                with word_com_lock():
+                with word_com_lock(), contextlib.redirect_stderr(io.StringIO()):  # hide its progress bar
                     convert(str(docx_path), str(pdf_path))
                 if pdf_path.exists():
                     return pdf_path
@@ -284,8 +286,8 @@ def customize(resume_path: Path, job_description: str, role: str, candidate: dic
         note = f"{changed} sections rewritten"
     except llm_client.LLMError as exc:
         changed = 0
-        note = f"AI customization skipped: {exc}"
-        log.warning(note)
+        note = "original resume (AI unavailable)"
+        log.warning("AI tailoring skipped: %s", exc)
     remove_consecutive_blanks(doc)
 
     out_docx = work / f"{_slug(candidate.get('name', 'candidate'))}_Resume.docx"

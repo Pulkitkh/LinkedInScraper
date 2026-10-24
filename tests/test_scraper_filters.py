@@ -45,7 +45,7 @@ def test_bench_marketing(text):
 
 def test_detect_job_title():
     assert ls.detect_job_title("Hi all\nJob Title: Sr. Java Engineer\nLocation: TX") == "Sr. Java Engineer"
-    assert ls.detect_job_title("#hiring\nLooking for a Salesforce Developer - C2C") == "Looking for a Salesforce Developer - C2C"
+    assert ls.detect_job_title("#hiring\nLooking for a Salesforce Developer - C2C") == "Salesforce Developer"
     assert ls.detect_job_title("nothing here") == ""
 
 
@@ -74,7 +74,8 @@ def test_recruiter_name():
 
 
 def test_pending_recruiters_skips_contacted_and_mismatched(workspace):
-    base = {"role": "Java Developer", "job_description": "jd", "timestamp": csv_store.now(), "post_url": "u"}
+    base = {"role": "Java Developer", "job_description": "Java Developer, C2C, Dallas, TX",
+            "timestamp": csv_store.now(), "post_url": "u"}
     csv_store.append_rows(settings.recruiters_csv(), csv_store.RECRUITER_FIELDS, [
         {**base, "recruiter_name": "A", "recruiter_email": "a@x.com", "email_sent_status": "pending"},
         {**base, "recruiter_name": "A2", "recruiter_email": "A@x.com", "email_sent_status": "pending"},

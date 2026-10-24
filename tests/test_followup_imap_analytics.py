@@ -57,7 +57,7 @@ def test_followup_is_threaded_and_recorded(history):
     assert msg["In-Reply-To"] == "<due.1700000000@gmail.com>" and msg["References"] == "<due.1700000000@gmail.com>"
     assert msg["Cc"] == "jane@candidate.com, lead@agency.com" and msg["Bcc"] == "admin@agency.com"
     body = msg.get_body(("plain",)).get_content()
-    assert "Hi John," in body and "matches your payments platform" in body
+    assert "Hi there," in body and "matches your payments platform" in body  # due@x.com is not John's address
     assert next(msg.iter_attachments()).get_filename().startswith("Jane_Doe_Resume_")
     assert "Spring Boot, Kafka, AWS" in prompts[0][0] and prompts[0][1][0] == "openrouter"
 
