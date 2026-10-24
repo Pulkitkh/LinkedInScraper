@@ -31,7 +31,7 @@ Open `.env` and fill in these values:
 | `LINKEDIN_EMAIL`, `LINKEDIN_PASSWORD` | The LinkedIn account used for searching. |
 | `GMAIL_EMAIL` | The Gmail address that sends the emails. |
 | `GMAIL_APP_PASSWORD` | A 16-character **App Password**, not your normal password. Create it at Google Account → Security → 2-Step Verification → App passwords. Also turn on IMAP: Gmail → Settings → Forwarding and POP/IMAP. |
-| `GEMINI_API_KEY` | Free key from https://aistudio.google.com/apikey. |
+| `GEMINI_API_KEY` | Free key from https://aistudio.google.com/apikey. Keep `GEMINI_MODEL=gemini-flash-latest`. If a model name in `.env` has been retired, the tool picks a current model automatically and tells you which one to set. |
 | `BROWSER_CHANNEL` | Optional. `msedge` or `chrome` uses your installed browser, which LinkedIn trusts more. |
 | `GROQ_API_KEY`, `OPENROUTER_API_KEY` | Optional fallbacks if Gemini fails. |
 | `TEAM_LEAD_EMAIL`, `ADMIN_EMAIL` | Optional. Copied (CC) and blind-copied (BCC) on every outreach email. |
@@ -147,6 +147,8 @@ main.py ─► linkedin_login.py ─────► session.json
 | Option 2 shows a page the tool can't fill | Sign in by hand in the open window; the session is saved automatically. |
 | LinkedIn keeps showing a CAPTCHA or "unusual activity" | Set `BROWSER_CHANNEL=msedge` (Windows) or `BROWSER_CHANNEL=chrome` in `.env` to use your installed browser, then run option 2 again. |
 | Headless run says "Could not find the LinkedIn sign-in form" | Run option 2 once. If it keeps happening, send `scratch/login_debug.png`. |
+| `AI: gemini FAIL ... 404` | The model name was retired. Update to the latest version: a current model is now picked automatically. Or set `GEMINI_MODEL=gemini-flash-latest`. |
+| `AI: ... rejected the API key` | Create a new key and paste it into `.env` without quotes or spaces. |
 | "Gmail rejected the login" | `GMAIL_APP_PASSWORD` must be a 16-character App Password, with 2-Step Verification on. |
 | "recruiters.csv is locked" | Close the CSV in Excel and run again. Nothing was lost. |
 | Scraping finds 0 posts | Normal if there are no matching posts in the last 24h. Otherwise LinkedIn changed its markup: update `SELECTORS` in `linkedin_scraper.py`. |
@@ -188,7 +190,7 @@ pip install -r requirements.txt
 pytest
 ```
 
-There are 118 tests, and none of them need network access:
+There are 128 tests, and none of them need network access:
 
 - **Demo walkthrough:** drives the real menu through options 2→3→4→5 (test)→5 (live)→6→7→8→9→1. Only LinkedIn, Gmail and the inbox are simulated.
 - **Browser tests** against a mock LinkedIn page:

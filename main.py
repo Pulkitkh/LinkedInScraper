@@ -90,10 +90,12 @@ def check_connections() -> list[tuple[str, bool, str]]:
     run("Gmail IMAP login", imap)
     for provider in ("gemini", "groq", "openrouter"):
         if settings.env(f"{provider.upper()}_API_KEY"):
-            run(f"AI: {provider}", lambda p=provider: "replied: " + llm_client.generate(
-                "Answer with one word.", "Reply with the word OK.", [p])[:40])
+            def ping(p=provider):
+                reply = llm_client.generate("Answer with one word.", "Reply with the word OK.", [p])
+                return f"model {llm_client.current_model(p)} replied: {reply[:30]}"
+            run(f"AI: {provider}", ping)
         else:
-            results.append((f"AI: {provider}", False, "no API key in .env"))
+            results.append((f"AI: {provider}", None, "not configured (optional)"))
 
     def linkedin():
         with linkedin_login.browser_context(headless=True) as (_, page):
@@ -112,10 +114,13 @@ def show_checks(results) -> bool:
     for col in ("Check", "Result", "Details"):
         table.add_column(col, overflow="fold")
     for name, ok, detail in results:
-        table.add_row(name, "[green]PASS[/]" if ok else "[red]FAIL[/]", detail)
+        label = "[yellow]SKIP[/]" if ok is None else "[green]PASS[/]" if ok else "[red]FAIL[/]"
+        table.add_row(name, label, detail)
     console.print(table)
-    return all(ok for name, ok, _ in results if not name.startswith("AI: ")) and any(
-        ok for name, ok, _ in results if name.startswith("AI: "))
+    ai_ok = any(ok for name, ok, _ in results if name.startswith("AI: "))
+    if not ai_ok:
+        console.print("[yellow]No AI provider works - resumes will be sent without tailoring.[/]")
+    return ai_ok and all(ok for name, ok, _ in results if not name.startswith("AI: "))
 
 
 def choose_candidate() -> str:
