@@ -33,6 +33,7 @@ Open `.env` and fill in these values:
 | `GMAIL_APP_PASSWORD` | A 16-character **App Password**, not your normal password. Create it at Google Account → Security → 2-Step Verification → App passwords. Also turn on IMAP: Gmail → Settings → Forwarding and POP/IMAP. |
 | `GEMINI_API_KEY` | Free key from https://aistudio.google.com/apikey. Keep `GEMINI_MODEL=gemini-flash-latest`. If a model name in `.env` has been retired, the tool picks a current model automatically and tells you which one to set. |
 | `BROWSER_CHANNEL` | Optional. `msedge` or `chrome` uses your installed browser, which LinkedIn trusts more. |
+| `SHOW_BROWSER` | Optional. `true` lets you watch the browser search LinkedIn. Recommended for demos. Otherwise scraping runs invisibly in the background. |
 | `GROQ_API_KEY`, `OPENROUTER_API_KEY` | Optional fallbacks if Gemini fails. |
 | `TEAM_LEAD_EMAIL`, `ADMIN_EMAIL` | Optional. Copied (CC) and blind-copied (BCC) on every outreach email. |
 
@@ -53,7 +54,7 @@ Every row should say **PASS**: Gmail SMTP, Gmail IMAP, at least one AI provider,
 | Step | Menu | What happens | What to show |
 |---|---|---|---|
 | 1 | **1** Validate setup | Checks `.env`, resumes, the PDF converter and the CSV files, then optionally runs the live connection checks. | All green |
-| 2 | **2** LinkedIn login | Opens a **visible** browser, auto-fills your credentials, and lets you solve any CAPTCHA or 2FA. Saves `session.json`, so later runs are headless. | Browser logs in |
+| 2 | **2** LinkedIn login | Always opens a **visible** browser, auto-fills your credentials, and lets you solve any CAPTCHA or 2FA. Saves `session.json`, so later runs are headless. | Browser logs in |
 | 3 | **3** Scrape | Searches LinkedIn for each of the candidate's roles (last 24h, USA, C2C), extracts recruiter emails, filters the posts, and saves them to `recruiters.csv`. | Open `recruiters.csv` |
 | 4 | **4** Pending | Lists the recruiters this candidate hasn't contacted yet. | Table |
 | 5 | **5** Outreach, **test** mode | Builds every personalized email and tailored resume, but sends them all to **your own Gmail** (subject `[TEST -> recruiter@…]`). | Open your inbox: hook sentence plus tailored PDF |
@@ -70,7 +71,7 @@ python main.py --batch --mode live --limit 40 --yes      # scrape + tailor + sen
 python main.py --check-replies --followups --mode live --yes
 ```
 
-> **Demo tip:** do steps 1–2 before the meeting, so `session.json` exists and no CAPTCHA appears live. Use **test** mode for anything you show on screen, and keep `recruiters.csv` closed in Excel while the tool is running.
+> **Demo tip:** set `SHOW_BROWSER=true` so the audience sees the browser search LinkedIn. Do steps 1–2 before the meeting, so `session.json` exists and no CAPTCHA appears live. Use **test** mode for anything you show on screen, and keep `recruiters.csv` closed in Excel while the tool is running.
 
 ---
 
@@ -101,17 +102,21 @@ main.py ─► linkedin_login.py ─────► session.json
 
 ### Scraping and filtering (`linkedin_scraper.py`)
 
-1. **Query** per role: `"Java Developer" C2C -hotlist -fulltime -"available consultants" -Bench`. The exclusions can be set per candidate.
+1. **Query** per role: `"Java Developer" AND C2C NOT hotlist NOT fulltime NOT "available consultants" NOT Bench`.
+   - This is the spec's query written with LinkedIn's documented operators (AND/OR/NOT); a leading `-` is not reliably supported.
+   - The exclusions can be set per candidate.
+   - If this finds no posts with emails, the tool retries with `"Java Developer" C2C`. Bench and hotlist posts are still removed by the filters below.
 2. **Search URL:** posts from the past 24 hours, sorted by date, `geoUrn=["103644278"]` (United States).
 3. **Scrolling:** 6 scrolls, clicking only *collapsed* "…more" buttons so the full post text loads.
-4. **Post link:** taken from the post's `data-urn`. If a post has none, the scraper opens the three-dots menu, clicks **Copy link to post**, reads the clipboard, and strips the tracking parameters.
-5. **Email:** `mailto:` links first, then the regex `[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`. Obfuscated addresses like `name [at] domain [dot] com` are handled too. Posts without an email are skipped.
-6. **Filters**, applied in this order:
+4. **Finding posts without depending on LinkedIn's layout:** the scraper finds every email address and `mailto:` link on the page, then walks up to the post that contains it. This works with LinkedIn's classic layout and with its newer layout, where class names are randomised.
+5. **Post link:** taken from the post ID (`urn:li:activity:…`) anywhere in the post's HTML, or from a post link. If neither exists, the scraper opens the three-dots menu, clicks **Copy link to post**, reads the clipboard, and strips the tracking parameters.
+6. **Email:** `mailto:` links first, then the regex `[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`. Obfuscated addresses like `name [at] domain [dot] com` are handled too. Posts without an email are skipped.
+7. **Filters**, applied in this order:
    - **Bench marketing** ("on my bench", "hotlist", "marketing my consultant"…): dropped.
    - **Non-USA** (India, Pune, Canada, London…): dropped. The post must also mention a US city, a `City, ST` pattern, or a US term such as USA, GC, H1B or EST.
    - **Role mismatch:** the job title targets a domain the candidate doesn't do, such as a QA or DevOps title for a Java developer. The post is saved as `mismatched_role` and never emailed.
    - Everything else is saved as `pending`.
-7. If LinkedIn changes its post layout, the scraper falls back to plain result list items.
+8. If a role finds 0 posts with emails, a screenshot and the HTML of the results page are saved to `scratch/search_debug_<role>.png` / `.html`.
 
 ### Resume tailoring (`resume_customizer.py`)
 
@@ -151,7 +156,8 @@ main.py ─► linkedin_login.py ─────► session.json
 | `AI: ... rejected the API key` | Create a new key and paste it into `.env` without quotes or spaces. |
 | "Gmail rejected the login" | `GMAIL_APP_PASSWORD` must be a 16-character App Password, with 2-Step Verification on. |
 | "recruiters.csv is locked" | Close the CSV in Excel and run again. Nothing was lost. |
-| Scraping finds 0 posts | Normal if there are no matching posts in the last 24h. Otherwise LinkedIn changed its markup: update `SELECTORS` in `linkedin_scraper.py`. |
+| Scraping finds 0 posts | Open `scratch/search_debug_<role>.png` to see what LinkedIn showed. If it lists posts with visible emails, send that file and the `.html` so the extraction can be adjusted. |
+| You don't see a browser during scraping | That's the default: it runs invisibly in the background. Set `SHOW_BROWSER=true` in `.env`, answer `y` to "Show the browser window?", or run `python main.py --batch --show-browser`. |
 | You want the full error details | Run `python main.py -v`. |
 
 ### Data files (spec section 4)
@@ -190,13 +196,16 @@ pip install -r requirements.txt
 pytest
 ```
 
-There are 128 tests, and none of them need network access:
+There are 142 tests, and none of them need network access:
 
 - **Demo walkthrough:** drives the real menu through options 2→3→4→5 (test)→5 (live)→6→7→8→9→1. Only LinkedIn, Gmail and the inbox are simulated.
 - **Browser tests** against a mock LinkedIn page:
   - login, including LinkedIn's `login-submit` redirect
   - every sign-in page variant (classic, homepage, two-step, "Welcome back"), manual sign-in fallback, page changing while typing, closed browser window, corrupt `session.json`
-  - a post disappearing while it's being read
+  - the page re-rendering while posts are read
+  - LinkedIn's newer layout (randomised classes, `role="listitem"`, post IDs only inside attributes)
+  - the fallback to a simpler query, and the debug snapshot when nothing is found
+  - a real visible browser window (run `xvfb-run pytest` on Linux)
   - wrong password, CAPTCHA checkpoint, session reuse, expired session
   - "…more" expansion and "Copy link to post"
   - all filter cases, and the fallback for a new page layout

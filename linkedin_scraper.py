@@ -18,34 +18,29 @@ log = logging.getLogger(__name__)
 
 SEARCH_URL = f"{LINKEDIN}/search/results/content/"
 MAX_SCROLLS = 6
-CARD_WAIT_MS = 15000  # how long to wait for post cards before trying the generic fallback
+CARD_WAIT_MS = 15000  # how long to wait for search results to render
 
 # LinkedIn markup changes often; each field has fallbacks (first match wins).
 SELECTORS = {
-    "card": (
-        'div[data-urn^="urn:li:activity:"], div[data-urn^="urn:li:share:"], div[data-urn^="urn:li:ugcPost:"], '
-        'div[data-id^="urn:li:activity:"], div.feed-shared-update-v2:not([data-urn]), '
-        'div[data-view-name="feed-full-update"]'
-    ),
-    # Used only when none of the card selectors match (LinkedIn layout change): plain result list items.
-    "fallback_card": "main ul > li",
-    "control_menu": "button[aria-label*='control menu for post' i], button.feed-shared-control-menu__trigger",
+    "control_menu": "button[aria-label*='control menu for post' i], button.feed-shared-control-menu__trigger, "
+                    "button[aria-label*='more actions' i]",
     # LinkedIn labels it "Copy link to post"; scoped to menus so a post mentioning "copy link" never matches.
     "copy_link": "[role='menu'] [role='menuitem']:has-text('Copy link'), "
                  "[role='menu'] [role='button']:has-text('Copy link'), "
                  ".feed-shared-control-menu__item:has-text('Copy link'), "
                  ".artdeco-dropdown__content-inner li:has-text('Copy link')",
-    "show_more_results": "button.scaffold-finite-scroll__load-button",
+    "show_more_results": "button.scaffold-finite-scroll__load-button, button:has-text('Show more results')",
 }
 
 # Clicks only collapsed "…more" toggles (the same button turns into "…less" once expanded).
 EXPAND_JS = r"""
 () => {
   let clicked = 0;
-  for (const b of document.querySelectorAll('button')) {
-    const label = ((b.getAttribute('aria-label') || '') + ' ' + b.innerText).toLowerCase();
+  for (const b of document.querySelectorAll('button, [role="button"]')) {
+    const label = ((b.getAttribute('aria-label') || '') + ' ' + (b.innerText || '')).toLowerCase().trim();
     const isToggle = b.classList.contains('feed-shared-inline-show-more-text__see-more-less-toggle')
-      || /see more|…more|\.\.\.more/.test(label);
+      || b.getAttribute('data-testid') === 'expandable-text-button'
+      || /^(…|\.\.\.)\s*more$|see more|show more(?! results)/.test(label);
     if (isToggle && !/less/.test(label) && b.getAttribute('aria-expanded') !== 'true') {
       b.click();
       clicked++;
@@ -55,30 +50,83 @@ EXPAND_JS = r"""
 }
 """
 
-CARD_JS = """
-(node) => {
-  const pick = (list) => {
-    for (const s of list) {
-      const el = node.querySelector(s);
-      if (el && el.innerText && el.innerText.trim()) return el;
+# Layout-independent post extraction. LinkedIn's class names change constantly (and are randomised in its
+# newer UI), so instead of matching card classes we start from every email address / mailto link on the
+# page and walk up to the element that represents one post in the results list.
+POSTS_JS = r"""
+() => {
+  const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/;
+  const OBFUSCATED = /[A-Za-z0-9._%+-]+\s*[\[\(\{<]\s*at\s*[\]\)\}>]\s*[A-Za-z0-9-]+/i;
+  const URN = /urn:li:(?:activity|share|ugcPost):\d{10,}/;
+  const root = document.querySelector('main') || document.body;
+  const PROFILE = 'a[href*="/in/"], a[href*="/company/"]';
+  const hasProfile = el => !!el.querySelector(PROFILE);
+  const isMarked = el => el.matches('[data-urn^="urn:li:"], [data-id^="urn:li:"], [data-view-name="feed-full-update"]');
+
+  // the list-item level: its parent holds several children that each have a profile link
+  const isListItem = el => {
+    const parent = el.parentElement;
+    if (!parent || !hasProfile(el)) return false;
+    let siblingsWithProfiles = 0;
+    for (const child of parent.children) {
+      if (hasProfile(child) && (child.innerText || '').length > 40) siblingsWithProfiles++;
+      if (siblingsWithProfiles >= 2) return true;
     }
-    return null;
+    return false;
   };
-  const txt = (el) => el ? el.innerText.replace(/\\u00a0/g, ' ').trim() : '';
-  const actor = node.querySelector(
-    'a.update-components-actor__meta-link, .update-components-actor__container a[href*="/in/"], a[href*="/in/"]');
-  const urnNode = node.closest('[data-urn]') || node;
-  return {
-    urn: node.getAttribute('data-urn') || node.getAttribute('data-id') || urnNode.getAttribute('data-urn') || '',
-    text: txt(pick(['.update-components-text', '.feed-shared-inline-show-more-text',
-                    '.feed-shared-update-v2__description', '.feed-shared-text'])) || txt(node),
-    actor_name: txt(pick(['.update-components-actor__title span[aria-hidden="true"]',
-                          '.update-components-actor__name span[aria-hidden="true"]',
-                          '.update-components-actor__title', '.update-components-actor__name'])),
-    profile_url: actor ? actor.href : '',
-    mailtos: Array.from(node.querySelectorAll('a[href^="mailto:"]')).map(a => a.getAttribute('href')),
-  };
+  const isPostLike = el => hasProfile(el) &&
+    el.matches('li, article, [role="listitem"], [role="article"], [data-view-name*="update"], [componentkey]');
+
+  const seeds = new Set();
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    const t = n.nodeValue || '';
+    if (t.length > 5 && (EMAIL.test(t) || OBFUSCATED.test(t)) && n.parentElement) seeds.add(n.parentElement);
+  }
+  root.querySelectorAll('a[href^="mailto:"]').forEach(a => seeds.add(a));
+
+  const containers = [];
+  for (const seed of seeds) {
+    let found = null, fallback = null;
+    for (let el = seed, depth = 0; el && el !== root && depth < 30; el = el.parentElement, depth++) {
+      if (isMarked(el) || isListItem(el)) { found = el; break; }
+      if (!fallback && isPostLike(el)) fallback = el;
+    }
+    found = found || fallback;
+    if (found && !containers.includes(found)) containers.push(found);
+  }
+  // keep only outermost posts (a reshared post nested inside another post counts once)
+  const posts = containers.filter(c => !containers.some(o => o !== c && o.contains(c)));
+
+  const txt = el => el ? (el.innerText || '').replace(/ /g, ' ').trim() : '';
+  return posts.map((node, idx) => {
+    node.setAttribute('data-rb-card', String(idx));
+    const textEl = node.querySelector('.update-components-text, [data-testid="expandable-text-box"], ' +
+      '.feed-shared-inline-show-more-text, .feed-shared-update-v2__description, .feed-shared-text');
+    const actor = [...node.querySelectorAll(PROFILE)].find(a => txt(a)) || node.querySelector(PROFILE);
+    const nameEl = actor && (actor.querySelector('span[aria-hidden="true"]') || actor);
+    const marked = node.closest('[data-urn^="urn:li:"]');
+    const urnMatch = (marked && marked.getAttribute('data-urn').match(URN)) || node.outerHTML.match(URN);
+    const link = node.querySelector('a[href*="/feed/update/urn:li:"], a[href*="/posts/"]');
+    const fullText = txt(node);
+    const bodyText = txt(textEl);
+    return {
+      idx,
+      urn: urnMatch ? urnMatch[0] : '',
+      link: link ? link.href : '',
+      // the full card text is used if the post body element isn't recognised (or misses the email)
+      text: bodyText && EMAIL.test(bodyText) ? bodyText : fullText,
+      actor_name: txt(nameEl).split('\n')[0],
+      profile_url: actor ? actor.href : '',
+      mailtos: [...node.querySelectorAll('a[href^="mailto:"]')].map(a => a.getAttribute('href')),
+    };
+  });
 }
+"""
+
+NO_RESULTS_JS = r"""
+() => /no results found|try (different|other) (keywords|search)|no matching results/i
+        .test((document.querySelector('main') || document.body).innerText || '')
 """
 
 # ------------------------------------------------------------------ text analysis
@@ -210,10 +258,18 @@ def clean_url(url: str) -> str:
 # ------------------------------------------------------------------ search
 
 def build_search_query(role: str, exclusions: list[str] | None = None) -> str:
-    """'"Java Developer" C2C -hotlist -fulltime -"available consultants" -Bench'"""
+    """'"Java Developer" AND C2C NOT hotlist NOT fulltime NOT "available consultants" NOT Bench'
+
+    LinkedIn's documented boolean operators are AND / OR / NOT; a leading "-" is not reliably supported.
+    """
     excluded = exclusions if exclusions is not None else client_config.DEFAULT_EXCLUSION_KEYWORDS
-    terms = [f'-"{k}"' if " " in k else f"-{k}" for k in excluded]
-    return " ".join([f'"{role}"', "C2C", *terms])
+    terms = [f'NOT "{k}"' if " " in k else f"NOT {k}" for k in excluded]
+    return " ".join([f'"{role}"', "AND", "C2C", *terms])
+
+
+def relaxed_search_query(role: str) -> str:
+    """Fallback when the strict query returns nothing; bench/hotlist posts are still dropped by the filters."""
+    return f'"{role}" C2C'
 
 
 def build_search_url(query: str) -> str:
@@ -255,21 +311,43 @@ def copy_post_link(page: Page, card: ElementHandle) -> str:
         return ""
 
 
-def scrape_role(page: Page, role: str, exclusions: list[str], max_scrolls: int = MAX_SCROLLS,
-                pause: tuple[float, float] = (1.5, 3.0)) -> list[dict]:
-    """Return raw cards ({post_url, text, actor_name, profile_url, emails}) for one search role."""
-    query = build_search_query(role, exclusions)
-    log.info("Searching LinkedIn: %s", query)
+def _collect_posts(page: Page) -> list[dict]:
+    for attempt in range(3):
+        try:
+            return page.evaluate(POSTS_JS)
+        except Exception as exc:  # page re-rendering or navigating; try again shortly
+            log.debug("Post extraction retry %d: %s", attempt + 1, exc)
+            page.wait_for_timeout(1000)
+    return []
+
+
+def _save_search_debug(page: Page, role: str) -> str:
+    base = settings.scratch_dir() / ("search_debug_" + re.sub(r"[^A-Za-z0-9]+", "_", role).strip("_"))
+    try:
+        page.screenshot(path=f"{base}.png", full_page=True)
+        base.with_suffix(".html").write_text(page.content(), encoding="utf-8")
+        return f"{base}.png"
+    except Exception:
+        return ""
+
+
+def _run_search(page: Page, query: str, max_scrolls: int, pause: tuple[float, float]) -> dict[str, dict]:
     page.goto(build_search_url(query), wait_until="domcontentloaded")
     try:
-        page.wait_for_selector(SELECTORS["card"], timeout=CARD_WAIT_MS)
+        page.wait_for_selector("main a[href*='/in/'], main a[href*='/company/']", timeout=CARD_WAIT_MS)
     except Exception:
-        if not page.query_selector(SELECTORS["fallback_card"]):
-            log.warning("No posts found for %r", role)
-            return []
+        pass  # no results, or a slow page; the scroll loop below still gives it time
+
+    found: dict[str, dict] = {}
+
+    def harvest():
+        for post in _collect_posts(page):
+            key = post["urn"] or post["link"] or post["text"][:200]
+            found.setdefault(key, post)
 
     for _ in range(max_scrolls):
         _expand_see_more(page)
+        harvest()  # collected every scroll in case LinkedIn virtualises the list
         page.mouse.wheel(0, 2500)
         human_pause(*pause)
         try:
@@ -280,29 +358,45 @@ def scrape_role(page: Page, role: str, exclusions: list[str], max_scrolls: int =
         except Exception:  # button re-rendered or gone; scrolling continues
             pass
     _expand_see_more(page)
+    page.wait_for_timeout(300)
+    harvest()
+    return found
 
-    handles = page.query_selector_all(SELECTORS["card"])
-    if not handles:
-        log.warning("Post cards not recognised (LinkedIn layout changed?) - using generic result items")
-        handles = page.query_selector_all(SELECTORS["fallback_card"])
+
+def scrape_role(page: Page, role: str, exclusions: list[str], max_scrolls: int = MAX_SCROLLS,
+                pause: tuple[float, float] = (1.5, 3.0)) -> list[dict]:
+    """Return raw cards ({post_url, text, actor_name, profile_url, emails}) for one search role."""
+    query = build_search_query(role, exclusions)
+    log.info("Searching LinkedIn: %s", query)
+    found = _run_search(page, query, max_scrolls, pause)
+    if not found:
+        no_results = page.evaluate(NO_RESULTS_JS)
+        query = relaxed_search_query(role)
+        log.info("%s; retrying with a simpler query: %s",
+                 "LinkedIn found no results" if no_results else "No posts with emails", query)
+        found = _run_search(page, query, max_scrolls, pause)
 
     cards: dict[str, dict] = {}
-    for handle in handles:
-        try:
-            data = handle.evaluate(CARD_JS)
-        except Exception as exc:  # LinkedIn re-rendered the list and this card is gone
-            log.debug("Skipping a card that disappeared: %s", exc)
-            continue
-        emails = extract_emails(data["text"], data["mailtos"])
+    for post in found.values():
+        emails = extract_emails(post["text"], post["mailtos"])
         if not emails:
-            continue  # only posts with a recruiter email are useful
-        if data["urn"]:
-            post_url = f"{LINKEDIN}/feed/update/{data['urn']}/"
+            continue
+        if post["urn"]:
+            post_url = f"{LINKEDIN}/feed/update/{post['urn']}/"
+        elif post["link"]:
+            post_url = clean_url(post["link"])
         else:
-            post_url = copy_post_link(page, handle)
-        key = post_url or data["text"][:200]
-        cards.setdefault(key, {**data, "post_url": post_url, "emails": emails})
-    log.info("  %d posts with emails for %r", len(cards), role)
+            handle = page.query_selector(f'[data-rb-card="{post["idx"]}"]')
+            post_url = copy_post_link(page, handle) if handle else ""
+        key = post_url or post["text"][:200]
+        cards.setdefault(key, {**post, "post_url": post_url, "emails": emails})
+
+    if not cards:
+        shot = _save_search_debug(page, role)
+        log.warning("  0 posts with emails for %r%s", role,
+                    f" - saved what LinkedIn showed to {shot}" if shot else "")
+    else:
+        log.info("  %d posts with emails for %r", len(cards), role)
     return list(cards.values())
 
 

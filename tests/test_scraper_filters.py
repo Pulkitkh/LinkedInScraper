@@ -8,9 +8,10 @@ import settings
 JAVA = {"allowed_domains": ["java", "fullstack", "backend"]}
 
 
-def test_query_matches_spec():
+def test_query_uses_linkedin_boolean_operators():
     assert ls.build_search_query("Java Developer") == \
-        '"Java Developer" C2C -hotlist -fulltime -"available consultants" -Bench'
+        '"Java Developer" AND C2C NOT hotlist NOT fulltime NOT "available consultants" NOT Bench'
+    assert ls.relaxed_search_query("Java Developer") == '"Java Developer" C2C'
 
 
 def test_search_url_filters():

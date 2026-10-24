@@ -95,7 +95,7 @@ def test_scrape_filters_and_saves_recruiters(browser):
     stats = linkedin_scraper.scrape_candidate("jane", page=page, max_scrolls=1, pause=(0, 0))
 
     params = parse_qs(urlparse(fake.search_urls[0]).query)
-    assert params["keywords"] == ['"Java Developer" C2C -hotlist -fulltime -"available consultants" -Bench']
+    assert params["keywords"] == ['"Java Developer" AND C2C NOT hotlist NOT fulltime NOT "available consultants" NOT Bench']
     assert params["datePosted"] == ['"past-24h"'] and params["sortBy"] == ['"date_posted"']
     assert params["geoUrn"] == ['["103644278"]']
 
@@ -183,7 +183,6 @@ def test_expired_session_falls_back_to_credentials(workspace):
 
 
 def test_unknown_layout_uses_generic_result_items(workspace, monkeypatch):
-    monkeypatch.setattr(linkedin_scraper, "CARD_WAIT_MS", 1500)
     fake = FakeLinkedIn("search_results_new_layout.html")
     with linkedin_login.browser_context(headless=True) as (context, page):
         context.route("https://www.linkedin.com/**", fake.handle)
@@ -194,21 +193,69 @@ def test_unknown_layout_uses_generic_result_items(workspace, monkeypatch):
     assert row["recruiter_email"] == "kate@nexgen.io" and row["recruiter_name"] == "Kate Wu"
 
 
-def test_card_disappearing_mid_scrape_is_skipped(browser, monkeypatch):
-    from playwright.sync_api import Error
-
+def test_page_rerendering_during_extraction_is_retried(browser, monkeypatch):
     context, page, _ = browser
     linkedin_login.login(context, page, headless=True)
-    real_query = page.query_selector_all
+    real_evaluate, calls = page.evaluate, []
 
-    class Gone:
-        def evaluate(self, *a, **k):
-            raise Error("Element is not attached to the DOM")
+    def flaky(expression, *args):
+        if expression is linkedin_scraper.POSTS_JS and not calls:
+            calls.append(1)
+            raise RuntimeError("Execution context was destroyed, most likely because of a navigation")
+        return real_evaluate(expression, *args)
 
-    def with_vanished_card(selector):
-        handles = real_query(selector)
-        return [Gone(), *handles] if selector == linkedin_scraper.SELECTORS["card"] else handles
-
-    monkeypatch.setattr(page, "query_selector_all", with_vanished_card)
+    monkeypatch.setattr(page, "evaluate", flaky)
     cards = linkedin_scraper.scrape_role(page, "Java Developer", [], max_scrolls=0, pause=(0, 0))
-    assert {"john.smith@techcorp.com", "maria@staffhub.com"} <= {c["emails"][0] for c in cards}
+    assert calls and {"john.smith@techcorp.com", "maria@staffhub.com"} <= {c["emails"][0] for c in cards}
+
+
+def test_new_linkedin_layout_with_random_class_names(workspace):
+    """LinkedIn's newer UI: obfuscated classes, role=listitem, URN only inside an attribute value."""
+    fake = FakeLinkedIn("search_results_sdui.html")
+    with linkedin_login.browser_context(headless=True) as (context, page):
+        context.route("https://www.linkedin.com/**", fake.handle)
+        linkedin_login.login(context, page, headless=True)
+        cards = linkedin_scraper.scrape_role(page, "Java Developer", [], max_scrolls=1, pause=(0, 0))
+    by_email = {c["emails"][0]: c for c in cards}
+    assert set(by_email) == {"sara.lopez@apexsys.com", "dev@talentgrid.io"}
+    sara, dev = by_email["sara.lopez@apexsys.com"], by_email["dev@talentgrid.io"]
+    assert sara["post_url"] == "https://www.linkedin.com/feed/update/urn:li:activity:7200000000000000001/"
+    assert sara["actor_name"] == "Sara Lopez" and sara["profile_url"].endswith("/in/sara-lopez-9a8b7c/")
+    assert "Phoenix, AZ" in sara["text"]  # revealed by the "… more" button
+    assert dev["actor_name"] == "Dev Patel"  # the author, not the person mentioned in the post
+
+
+def test_strict_query_without_results_retries_simpler_query(workspace):
+    class StrictNoResults(FakeLinkedIn):
+        def handle(self, route):
+            if "/search/results/content" in route.request.url and "NOT" in route.request.url:
+                self.search_urls.append(route.request.url)
+                route.fulfill(content_type="text/html", body="<main><h2>No results found</h2></main>")
+            else:
+                super().handle(route)
+
+    fake = StrictNoResults()
+    with linkedin_login.browser_context(headless=True) as (context, page):
+        context.route("https://www.linkedin.com/**", fake.handle)
+        linkedin_login.login(context, page, headless=True)
+        cards = linkedin_scraper.scrape_role(page, "Java Developer", ["hotlist"], max_scrolls=0, pause=(0, 0))
+    assert len(fake.search_urls) == 2
+    assert parse_qs(urlparse(fake.search_urls[1]).query)["keywords"] == ['"Java Developer" C2C']
+    assert cards
+
+
+def test_zero_results_saves_debug_snapshot(workspace):
+    class Empty(FakeLinkedIn):
+        def handle(self, route):
+            if "/search/results/content" in route.request.url:
+                route.fulfill(content_type="text/html", body="<main><h2>No results found</h2></main>")
+            else:
+                super().handle(route)
+
+    fake = Empty()
+    with linkedin_login.browser_context(headless=True) as (context, page):
+        context.route("https://www.linkedin.com/**", fake.handle)
+        linkedin_login.login(context, page, headless=True)
+        assert linkedin_scraper.scrape_role(page, "Java Developer", [], max_scrolls=0, pause=(0, 0)) == []
+    assert (settings.scratch_dir() / "search_debug_Java_Developer.png").exists()
+    assert (settings.scratch_dir() / "search_debug_Java_Developer.html").exists()

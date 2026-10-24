@@ -68,14 +68,14 @@ def test_full_demo_walkthrough(demo, monkeypatch):
     monkeypatch.setattr(llm_client, "generate", lambda *a, **k: "OK")
     queue = script(monkeypatch, [
         "2",                      # LinkedIn login -> session.json
-        "3", 1, "y",              # scrape for candidate 1, headless
+        "3", 1, "y",              # scrape for candidate 1, browser visible
         "4", 1,                   # view pending
         "5", 1, "test", 20,       # outreach in TEST mode (to my own inbox)
         "5", 1, "live", 20, "SEND",  # outreach LIVE after typing SEND
         age_history,              # pretend a week passed
         "6", "live", "SEND",      # threaded follow-ups
         "7",                      # IMAP reply sync
-        "8", "test", 40,          # batch mode (test)
+        "8", "test", 40, "n",     # batch mode (test), browser hidden
         "9",                      # analytics
         "1", "n",                 # validate setup (no live checks)
         "0",
@@ -180,3 +180,68 @@ def test_cli_invalid_menu_choice_is_reprompted(tmp_path):
 def test_cli_batch_without_session_fails_cleanly(tmp_path):
     result = _run_cli(["--batch", "--mode", "test"], tmp=tmp_path)
     assert result.returncode == 1 and "Traceback" not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("value,expected", [("true", True), ("Yes", True), ("1", True), ("false", False), ("", False)])
+def test_show_browser_setting(monkeypatch, value, expected):
+    monkeypatch.setenv("SHOW_BROWSER", value)
+    assert settings.show_browser() is expected
+
+
+def test_show_browser_prompt_default_follows_setting(monkeypatch):
+    seen = {}
+
+    def ask(question, choices=None, default=None):
+        seen["default"] = default
+        return default
+
+    monkeypatch.setattr(main.Prompt, "ask", ask)
+    monkeypatch.setenv("SHOW_BROWSER", "true")
+    assert main.ask_show_browser() is True and seen["default"] == "y"
+    monkeypatch.setenv("SHOW_BROWSER", "false")
+    assert main.ask_show_browser() is False and seen["default"] == "n"
+
+
+def test_menu_passes_visible_browser_choice(workspace, monkeypatch):
+    calls = {}
+    monkeypatch.setattr(main.linkedin_scraper, "scrape_candidate",
+                        lambda key, headless=True: calls.setdefault("scrape", headless) or {})
+    monkeypatch.setattr(main, "run_batch", lambda mode, limit, assume_yes=False, headless=True:
+                        calls.setdefault("batch", headless))
+    script(monkeypatch, ["3", 1, "y", "8", "test", 40, "y", "0"])
+    main.interactive()
+    assert calls == {"scrape": False, "batch": False}  # "y" = show the window = not headless
+
+
+@pytest.mark.parametrize("argv,env,headless", [
+    (["--batch"], "false", True),
+    (["--batch", "--show-browser"], "false", False),
+    (["--batch"], "true", False),
+])
+def test_cli_show_browser(workspace, monkeypatch, argv, env, headless):
+    seen = {}
+    monkeypatch.setenv("SHOW_BROWSER", env)
+    monkeypatch.setattr(main, "run_batch", lambda mode, limit, assume_yes=False, headless=True:
+                        seen.setdefault("headless", headless))
+    assert main.main(argv) == 0 and seen["headless"] is headless
+
+
+@needs_browser
+@pytest.mark.skipif(not os.environ.get("DISPLAY") and sys.platform.startswith("linux"),
+                    reason="needs a display (run under xvfb-run on Linux)")
+def test_real_visible_browser_scrape(workspace, monkeypatch):
+    """A real, visible (non-headless) Chromium window logs in and scrapes."""
+    fake = FakeLinkedIn()
+    real_context = linkedin_login.browser_context
+
+    @contextmanager
+    def routed(headless=True, use_session=True):
+        assert headless is False
+        with real_context(headless=False, use_session=use_session) as (context, page):
+            context.route("https://www.linkedin.com/**", fake.handle)
+            yield context, page
+
+    monkeypatch.setattr(linkedin_scraper, "browser_context", routed)
+    monkeypatch.setattr(linkedin_scraper, "human_pause", lambda *a: None)
+    stats = linkedin_scraper.scrape_candidate("jane", headless=False, max_scrolls=1, pause=(0, 0))
+    assert stats["saved"] == 2

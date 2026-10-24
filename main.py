@@ -137,6 +137,12 @@ def choose_mode() -> str:
                       choices=["test", "live"], default="test")
 
 
+def ask_show_browser() -> bool:
+    default = "y" if settings.show_browser() else "n"
+    return Prompt.ask("Show the browser window while it searches LinkedIn?", choices=["y", "n"],
+                      default=default) == "y"
+
+
 def confirm_send(mode: str, count: int, assume_yes: bool = False) -> bool:
     if mode == "test" or assume_yes:
         return True
@@ -234,8 +240,7 @@ def interactive() -> None:
                 console.print("[green]Logged in; session.json saved.[/]" if ok else "[red]Login failed.[/]")
             elif choice == "3":
                 key = choose_candidate()
-                stats = linkedin_scraper.scrape_candidate(key, headless=Prompt.ask(
-                    "Headless?", choices=["y", "n"], default="y") == "y")
+                stats = linkedin_scraper.scrape_candidate(key, headless=not ask_show_browser())
                 console.print(stats)
             elif choice == "4":
                 show_pending(linkedin_scraper.pending_recruiters(choose_candidate()))
@@ -249,7 +254,8 @@ def interactive() -> None:
             elif choice == "7":
                 console.print(f"{imap_reply_detector.check_replies()} new replies detected.")
             elif choice == "8":
-                run_batch(choose_mode(), IntPrompt.ask("Global daily email limit", default=40))
+                mode, limit = choose_mode(), IntPrompt.ask("Global daily email limit", default=40)
+                run_batch(mode, limit, headless=not ask_show_browser())
             elif choice == "9":
                 console.print(analytics.compute_stats())
                 console.print(f"Dashboard: {analytics.export_report()}")
@@ -262,6 +268,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--check", action="store_true", help="live checks: Gmail SMTP/IMAP, AI keys, LinkedIn")
     parser.add_argument("--batch", action="store_true", help="run option 8 without the menu")
+    parser.add_argument("--show-browser", action="store_true",
+                        help="run LinkedIn in a visible browser window (also SHOW_BROWSER=true in .env)")
     parser.add_argument("--followups", action="store_true", help="send due follow-ups without the menu")
     parser.add_argument("--check-replies", action="store_true", help="sync replies without the menu")
     parser.add_argument("--mode", choices=["test", "live"], default="test")
@@ -285,7 +293,8 @@ def main(argv: list[str] | None = None) -> int:
             if confirm_send(args.mode, len(followup_sender.eligible_followups()), args.yes):
                 show_report("Follow-ups", followup_sender.send_followups(mode=args.mode, limit=args.limit))
         if args.batch:
-            run_batch(args.mode, args.limit, args.yes)
+            run_batch(args.mode, args.limit, args.yes,
+                      headless=not (args.show_browser or settings.show_browser()))
         if not (args.batch or args.followups or args.check_replies):
             interactive()
     except KeyboardInterrupt:
