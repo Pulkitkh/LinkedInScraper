@@ -1,0 +1,14 @@
+.env
+session.json
+recruiters.csv
+email_sent_history.csv
+analytics_report.html
+scratch/
+clients/*
+!clients/README.md
+!clients/sample_java_resume.docx
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/

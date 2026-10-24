@@ -1,0 +1,70 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Search | LinkedIn</title></head>
+<body>
+<header id="global-nav">nav</header>
+<main>
+
+<!-- 1. Valid US Java C2C requirement; email only in a mailto link -->
+<div class="feed-shared-update-v2" data-urn="urn:li:activity:7100000000000000001">
+  <div class="update-components-actor__container">
+    <a class="update-components-actor__meta-link" href="https://www.linkedin.com/in/john-smith-4b2a91?miniProfileUrn=x">
+      <span class="update-components-actor__title"><span aria-hidden="true">John Smith (He/Him)</span></span>
+    </a>
+  </div>
+  <div class="update-components-text"><span dir="ltr">Urgent Requirement!<br>
+Job Title: Senior Java Developer<br>
+Location: Dallas, TX (Hybrid)<br>
+C2C - 12 months. Visa: H1B, GC, USC<br>
+Java 17, Spring Boot, Microservices, Kafka, AWS, PostgreSQL. Spring Boot is a must.<br>
+Send resumes: <a href="mailto:John.Smith@TechCorp.com?subject=Java">here</a></span></div>
+</div>
+
+<!-- 2. Valid US post WITHOUT data-urn: link resolved through the three-dots "Copy link" menu -->
+<div class="feed-shared-update-v2" id="no-urn-card">
+  <div class="update-components-actor__container">
+    <a class="update-components-actor__meta-link" href="https://www.linkedin.com/in/maria-garcia-77">
+      <span class="update-components-actor__title"><span aria-hidden="true">Maria Garcia</span></span>
+    </a>
+  </div>
+  <button aria-label="Open control menu for post by Maria Garcia" onclick="openMenu()">...</button>
+  <div class="update-components-text"><span dir="ltr">Hiring: Java Full Stack Developer<br>
+Remote (US only) - C2C contract, Angular + Java + Spring Boot.<br>
+Email maria [at] staffhub [dot] com</span></div>
+</div>
+<div id="menu" role="menu" style="display:none">
+  <div role="button" onclick="copyLink()"><span>Copy link</span></div>
+</div>
+
+<!-- 3. Bench marketer -->
+<div class="feed-shared-update-v2" data-urn="urn:li:activity:7100000000000000003">
+  <a class="update-components-actor__meta-link" href="https://www.linkedin.com/in/bench-person"><span class="update-components-actor__title">Bench Person</span></a>
+  <div class="update-components-text"><span dir="ltr">I have a Java Developer on my bench, available for C2C in USA. Reach bench@vendor.com</span></div>
+</div>
+
+<!-- 4. Non-USA -->
+<div class="feed-shared-update-v2" data-urn="urn:li:activity:7100000000000000004">
+  <a class="update-components-actor__meta-link" href="https://www.linkedin.com/in/rahul-hr"><span class="update-components-actor__title">Rahul Verma</span></a>
+  <div class="update-components-text"><span dir="ltr">Java Developer C2C, Pune, India. careers@infotech.in</span></div>
+</div>
+
+<!-- 5. Role mismatch: QA title -->
+<div class="feed-shared-update-v2" data-urn="urn:li:activity:7100000000000000005">
+  <a class="update-components-actor__meta-link" href="https://www.linkedin.com/in/amy-lee"><span class="update-components-actor__title">Amy Lee</span></a>
+  <div class="update-components-text"><span dir="ltr">Job Title: QA Automation Engineer<br>Selenium with Java, C2C, Austin, TX. amy@qaworks.com</span></div>
+</div>
+
+<!-- 6. No email: ignored -->
+<div class="feed-shared-update-v2" data-urn="urn:li:activity:7100000000000000006">
+  <a class="update-components-actor__meta-link" href="https://www.linkedin.com/in/no-email"><span class="update-components-actor__title">No Email</span></a>
+  <div class="update-components-text"><span dir="ltr">Java Developer C2C in Chicago, IL. DM me.</span></div>
+</div>
+
+</main>
+<script>
+function openMenu() { document.getElementById('menu').style.display = 'block'; }
+async function copyLink() {
+  await navigator.clipboard.writeText('https://www.linkedin.com/posts/maria-garcia-77_java-c2c-activity-7100000000000000002-AbCd?utm_source=share&utm_medium=member_desktop');
+  document.getElementById('menu').style.display = 'none';
+}
+</script>
+</body></html>

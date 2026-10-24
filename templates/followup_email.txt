@@ -1,0 +1,9 @@
+Hi {recruiter_first_name},
+
+I wanted to follow up on my application for the {job_title} role from your LinkedIn post. {value_prop}
+
+I've re-attached my resume for convenience. Please let me know if there is a good time to connect this week.
+
+Best regards,
+{candidate_name}
+{candidate_phone} | {candidate_email}

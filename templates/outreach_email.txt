@@ -1,0 +1,20 @@
+Subject: {job_title} (C2C) - {candidate_name} | {candidate_experience} | {candidate_work_auth}
+
+Hi {recruiter_first_name},
+
+I came across your LinkedIn post for the {job_title} role and I'm very interested in this C2C opportunity. {hook}
+
+A quick summary of my profile:
+- Experience: {candidate_experience}
+- Current location: {candidate_location} (open to relocation: {candidate_relocation})
+- Work authorization: {candidate_work_auth}
+- Availability: {candidate_availability}
+- LinkedIn: {candidate_linkedin}
+
+I've attached my resume for your review and would welcome the chance to discuss how I can contribute to your team.
+
+Post reference: {post_url}
+
+Best regards,
+{candidate_name}
+{candidate_phone} | {candidate_email}
