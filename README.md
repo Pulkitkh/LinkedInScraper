@@ -1,118 +1,197 @@
 # Recruitment and Outreach Automation System
 
-This is a command-line pipeline that automates cold outreach to US recruiters on LinkedIn for **Corp-to-Corp (C2C)** contract roles. It runs in **Client Application Mode**, sending outreach on behalf of registered client candidates.
+This is a command-line pipeline that automates cold outreach to US recruiters on LinkedIn for **Corp-to-Corp (C2C)** contract roles. It runs in **Client Application Mode**: it finds recruiters who are hiring, tailors each client candidate's resume to the job, and emails the recruiter on the candidate's behalf. It then follows up, tracks replies and reports results.
 
 It is built to match the *Technical Specifications & System Architecture Blueprint* (`C2C_project_documentation.pdf`).
 
-| # | Goal | Where |
-|---|---|---|
-| 1 | **Targeted scraping:** finds hiring posts for each candidate's roles from the last 24 hours, US only, and pulls out recruiter emails. | `linkedin_scraper.py` |
-| 2 | **Strict filtering:** drops bench-marketing posts and non-USA posts, and marks role mismatches (QA, DevOps, Salesforce…). | `linkedin_scraper.py` |
-| 3 | **AI resume customization:** Gemini, with Groq and OpenRouter as fallbacks, rewrites the summary, project bullets and skills. The original styling is kept and the result is exported to PDF. | `resume_customizer.py`, `llm_client.py` |
-| 4 | **Cold outreach:** sends through Gmail SMTP. Each email opens with a hook built from keywords in the job description, and CCs the candidate and team lead and BCCs the admin. | `gmail_sender.py` |
-| 5 | **Threaded follow-ups:** after 7 days without a reply, sends a follow-up in the same Gmail thread (`In-Reply-To` / `References`) with an AI-written value proposition. | `followup_sender.py` |
-| 6 | **IMAP reply sync:** scans the inbox and marks recruiters who replied with `replied=1`. | `imap_reply_detector.py` |
-| 7 | **Analytics:** prints stats and exports a dark-themed `analytics_report.html` dashboard. | `analytics.py` |
+---
 
-## Architecture
+## 1. How to start (first time, about 10 minutes)
 
-```
-main.py (CLI) ─► linkedin_login.py ─► session.json
-              ─► linkedin_scraper.py ─► recruiters.csv          (USA geo search, last 24h, strict filters)
-              ─► gmail_sender.py ──► resume_customizer.py ─► Gemini → Groq → OpenRouter
-                       │                    └► DOCX → PDF (MS Word COM via docx2pdf + lock_util.py, or LibreOffice)
-                       └► smtp.gmail.com:587 STARTTLS (fallback 465 SSL) ─► email_sent_history.csv
-              ─► followup_sender.py (threaded Re: emails)   ─► imap_reply_detector.py (imap.gmail.com:993)
-              ─► analytics.py ─► analytics_report.html
-```
+**Requirements:**
 
-| File | Purpose |
-|---|---|
-| `main.py` | Interactive menu, setup checks, live connection checks, pipeline orchestration, batch mode. |
-| `client_config.py` | Candidate profiles (`CLIENTS`), target roles and exclusions (`CANDIDATE_ROLES`), bench phrases, role domains. |
-| `linkedin_login.py` | Logs in with a visible browser and saves the session to `session.json`. |
-| `linkedin_scraper.py` | Playwright search, scroll, "See more" clicks, three-dots **Copy link** interceptor, email extraction, `is_usa_job`, `matches_strict_filter`. |
-| `gmail_sender.py` | 60+ `JD_KEYWORDS` hooks, SMTP, de-duplication, MIME attachments, `customize_resume()` dispatcher. |
-| `resume_customizer.py` | PDF→DOCX (pdf2docx), section extraction, LLM tailoring, run-level rewrite that keeps styling, DOCX→PDF. |
-| `example_client_customizer.py` | Template for client-specific customizers (like `safi_customizer.py`). |
-| `followup_sender.py` | Threaded follow-ups. |
-| `imap_reply_detector.py` | Reply detection. |
-| `analytics.py` | Statistics and the HTML dashboard. |
-| `lock_util.py` | File-based lock so Word COM conversions never run at the same time. |
-| `llm_client.py` | Gemini / Groq / OpenRouter fallback chain. |
-| `csv_store.py` | CSV databases, with header migration at runtime. |
-| `recruiters.csv`, `email_sent_history.csv` | Databases. The schemas are exactly as in spec section 4. |
-| `clients/` | Candidate resumes. A sample resume is included. |
-| `scratch/` | Temporary conversions and tailored resumes. |
-
-## Setup
-
-Requirements: Python 3.10+, and Windows with Microsoft Word for the spec's Word COM PDF conversion. On macOS with Word, docx2pdf works. On Linux, the system uses LibreOffice instead (`soffice`). If neither is present, the tailored DOCX is attached.
+- Python 3.10+
+- Google Chrome/Chromium, installed by Playwright in the steps below
+- For tailored resumes as PDF: **Microsoft Word** on Windows or macOS. On Linux, LibreOffice works instead.
 
 ```bash
+git clone https://github.com/Pulkitkh/intern.git
+cd intern
+python -m venv .venv
+.venv\Scripts\activate                 # Windows   (macOS/Linux: source .venv/bin/activate)
 pip install -r requirements.txt
 playwright install chromium
-copy .env.example .env        # Windows   (cp on macOS/Linux) - then fill it in
+copy .env.example .env                 # Windows   (macOS/Linux: cp .env.example .env)
 ```
 
-`.env` needs:
+Open `.env` and fill in these values:
 
-- `LINKEDIN_EMAIL`, `LINKEDIN_PASSWORD`
-- `GMAIL_EMAIL`, `GMAIL_APP_PASSWORD`. Use a [Gmail App Password](https://myaccount.google.com/apppasswords), which needs 2-Step Verification turned on. IMAP must be enabled in Gmail settings.
-- `GEMINI_API_KEY`, plus optionally `GROQ_API_KEY` and `OPENROUTER_API_KEY`, each with its `*_MODEL`.
-- Optionally `TEAM_LEAD_EMAIL` (CC) and `ADMIN_EMAIL` (BCC).
+| Variable | What to put |
+|---|---|
+| `LINKEDIN_EMAIL`, `LINKEDIN_PASSWORD` | The LinkedIn account used for searching. |
+| `GMAIL_EMAIL` | The Gmail address that sends the emails. |
+| `GMAIL_APP_PASSWORD` | A 16-character **App Password**, not your normal password. Create it at Google Account → Security → 2-Step Verification → App passwords. Also turn on IMAP: Gmail → Settings → Forwarding and POP/IMAP. |
+| `GEMINI_API_KEY` | Free key from https://aistudio.google.com/apikey. |
+| `GROQ_API_KEY`, `OPENROUTER_API_KEY` | Optional fallbacks if Gemini fails. |
+| `TEAM_LEAD_EMAIL`, `ADMIN_EMAIL` | Optional. Copied (CC) and blind-copied (BCC) on every outreach email. |
 
-Then register your candidates in `client_config.py` (spec section 8.1) and put their resumes in `clients/`.
+Then add your candidates in `client_config.py` (spec section 8.1), and put each resume in `clients/`. A `.docx` resume works best. A sample candidate and resume are included, so everything works out of the box.
 
-## Presentation / first-run checklist
-
-1. `python main.py --check` makes **real** connections to Gmail SMTP and IMAP, each AI provider, and LinkedIn, and checks every candidate's resume. Every row should say PASS. You need at least one AI provider.
-2. `python main.py` → **option 2** opens a visible browser and logs in to LinkedIn. Solve any CAPTCHA or 2FA prompt there. `session.json` is saved, and later runs are headless.
-3. **Option 3** scrapes for one candidate. Open `recruiters.csv` to show the extracted recruiters, emails, post links and JDs.
-4. **Option 4** lists that candidate's pending recruiters.
-5. **Option 5** in **test** mode sends each tailored email and resume to *your own* Gmail (subject `[TEST -> recruiter@…]`). Use this to show the personalization safely.
-6. **Option 5** in **live** mode: type `SEND` to email the recruiters for real. They are logged to `email_sent_history.csv`.
-7. **Option 7** checks replies. **Option 9** opens `analytics_report.html`.
-8. **Option 8** is the automated batch mode for every candidate. It asks for test/live mode and a global daily limit.
-
-For unattended or scheduled runs (for example from Windows Task Scheduler):
+**Verify everything with one command.** It makes real connections to every service:
 
 ```bash
-python main.py --batch --mode live --limit 40 --yes   # scrape + tailor + send for all candidates
+python main.py --check
+```
+
+Every row should say **PASS**: Gmail SMTP, Gmail IMAP, at least one AI provider, the LinkedIn session, and each candidate's resume. The first time, "LinkedIn session" fails until you log in with menu option 2, described below.
+
+---
+
+## 2. Demo workflow (menu: `python main.py`)
+
+| Step | Menu | What happens | What to show |
+|---|---|---|---|
+| 1 | **1** Validate setup | Checks `.env`, resumes, the PDF converter and the CSV files, then optionally runs the live connection checks. | All green |
+| 2 | **2** LinkedIn login | Opens a **visible** browser, auto-fills your credentials, and lets you solve any CAPTCHA or 2FA. Saves `session.json`, so later runs are headless. | Browser logs in |
+| 3 | **3** Scrape | Searches LinkedIn for each of the candidate's roles (last 24h, USA, C2C), extracts recruiter emails, filters the posts, and saves them to `recruiters.csv`. | Open `recruiters.csv` |
+| 4 | **4** Pending | Lists the recruiters this candidate hasn't contacted yet. | Table |
+| 5 | **5** Outreach, **test** mode | Builds every personalized email and tailored resume, but sends them all to **your own Gmail** (subject `[TEST -> recruiter@…]`). | Open your inbox: hook sentence plus tailored PDF |
+| 6 | **5** Outreach, **live** mode | Same as test mode, but sent to the real recruiters. You must type `SEND` to confirm. Each send is logged in `email_sent_history.csv`. | History CSV |
+| 7 | **6** Follow-ups | Recruiters with no reply after 7 days get a threaded "Re:" follow-up. | Gmail shows one thread |
+| 8 | **7** Check replies | Scans the inbox and sets `replied=1` for recruiters who answered. | History CSV |
+| 9 | **9** Analytics | Prints stats and writes `analytics_report.html`, a dark-themed dashboard. | Open the HTML |
+| 10 | **8** Batch mode | Does steps 3→6 for **every** candidate, using one browser session and a global daily limit. | Console summary |
+
+Commands you can schedule (for example with Windows Task Scheduler):
+
+```bash
+python main.py --batch --mode live --limit 40 --yes      # scrape + tailor + send for all candidates
 python main.py --check-replies --followups --mode live --yes
 ```
 
-## Search and filter rules
+> **Demo tip:** do steps 1–2 before the meeting, so `session.json` exists and no CAPTCHA appears live. Use **test** mode for anything you show on screen, and keep `recruiters.csv` closed in Excel while the tool is running.
 
-- **Query** (spec 5.1). The exclusions are configurable per candidate:
-  ```
-  "<Role>" C2C -hotlist -fulltime -"available consultants" -Bench
-  ```
-- **Search URL:** past 24 hours, sorted by date, `geoUrn=["103644278"]` (United States). The page is scrolled 6 times and every "See more" button is clicked.
-- **Post links:** taken from the post's `data-urn`. If a card has none, the three-dots menu → **Copy link** → clipboard is used, and the tracking parameters are stripped.
-- **Emails:** `mailto:` links are checked first, then the regex `[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}` runs on the post text. Obfuscated forms like `name [at] domain [dot] com` are handled too.
-- **`is_usa_job`:** rejects any post that mentions a `NON_USA_INDICATORS` entry (India, Pune, Noida, Canada…). Otherwise it needs a US city, a `City, ST` pattern, or an explicit US term (USA, USC, GC, H1B, EAD, US time zones…).
-- **Bench exclusion:** drops "on my bench", "candidate available", "marketing my consultant", hotlists and similar.
-- **Domain mismatch:** the declared job title is parsed. A post is stored as `mismatched_role` and never emailed when either:
-  - the title targets a domain outside the candidate's `allowed_domains`, or
-  - the title contains a role that defines the job on its own (QA, DevOps, Salesforce, SAP, BA, PM, data), even if it also mentions Java.
+---
 
-## Tests
+## 3. How it works
+
+```
+main.py ─► linkedin_login.py ─────► session.json
+        ─► linkedin_scraper.py ───► recruiters.csv          (search → scroll → extract → filter)
+        ─► gmail_sender.py ─┬─────► resume_customizer.py ─► llm_client.py (Gemini → Groq → OpenRouter)
+        │                   │                └► DOCX → PDF (Word COM + lock_util.py, or LibreOffice)
+        │                   └─────► smtp.gmail.com:587 STARTTLS (465 SSL fallback) ─► email_sent_history.csv
+        ─► followup_sender.py ────► threaded "Re:" emails (In-Reply-To / References)
+        ─► imap_reply_detector.py ► imap.gmail.com:993 → replied=1
+        ─► analytics.py ──────────► analytics_report.html
+```
+
+### LinkedIn login (`linkedin_login.py`)
+
+1. Loads `session.json` if it exists.
+2. If the session has expired, it fills in the login form from `.env`.
+3. It recognises a successful login by LinkedIn's `li_at` auth cookie (or the global navigation bar), then saves the session.
+4. A CAPTCHA or 2FA prompt in headless mode stops the run with a message to use option 2. In option 2 the browser stays open for up to 5 minutes so you can solve it.
+
+### Scraping and filtering (`linkedin_scraper.py`)
+
+1. **Query** per role: `"Java Developer" C2C -hotlist -fulltime -"available consultants" -Bench`. The exclusions can be set per candidate.
+2. **Search URL:** posts from the past 24 hours, sorted by date, `geoUrn=["103644278"]` (United States).
+3. **Scrolling:** 6 scrolls, clicking only *collapsed* "…more" buttons so the full post text loads.
+4. **Post link:** taken from the post's `data-urn`. If a post has none, the scraper opens the three-dots menu, clicks **Copy link to post**, reads the clipboard, and strips the tracking parameters.
+5. **Email:** `mailto:` links first, then the regex `[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`. Obfuscated addresses like `name [at] domain [dot] com` are handled too. Posts without an email are skipped.
+6. **Filters**, applied in this order:
+   - **Bench marketing** ("on my bench", "hotlist", "marketing my consultant"…): dropped.
+   - **Non-USA** (India, Pune, Canada, London…): dropped. The post must also mention a US city, a `City, ST` pattern, or a US term such as USA, GC, H1B or EST.
+   - **Role mismatch:** the job title targets a domain the candidate doesn't do, such as a QA or DevOps title for a Java developer. The post is saved as `mismatched_role` and never emailed.
+   - Everything else is saved as `pending`.
+7. If LinkedIn changes its post layout, the scraper falls back to plain result list items.
+
+### Resume tailoring (`resume_customizer.py`)
+
+1. A PDF resume is first converted to DOCX with pdf2docx.
+2. The **Summary**, **Experience/Projects** bullets and **Technical Skills** sections are found, including skills inside tables. Company, client and date lines are left untouched.
+3. These sections are sent with the job description to Gemini, falling back to Groq and then OpenRouter. The AI returns `rewritten_summary`, `rewritten_paragraphs` and `rewritten_skills` as JSON.
+4. The new text is written back run-by-run, keeping fonts, sizes, bold/italic, colours and labels like `Languages:`. Any rewrite with an unknown ID, empty text or an unreasonable length is ignored.
+5. The DOCX is converted to PDF: MS Word on Windows/macOS, with a mutex lock and a retry after killing a hung Word process, or LibreOffice otherwise.
+6. **If anything fails** (no AI key, AI error, conversion crash), the original resume is attached and the run continues.
+
+### Sending (`gmail_sender.py`)
+
+1. The 3 most frequent of 60+ technology keywords in the job description form the hook, e.g. *"My hands-on experience with Java, Spring Boot, and Kafka maps directly to what you are looking for."*
+2. The subject and body come from `templates/outreach_email.txt`. Replace that file with your team's template if you have one.
+3. The attachment is named `Candidate_Name_Resume_<timestamp>.pdf`, ASCII-only. Each email CCs the candidate and team lead, BCCs the admin, and waits 3 seconds before the next one.
+4. **Safety rules:**
+   - A recruiter is never emailed twice for the same candidate.
+   - A wrong app password or an unreachable Gmail server stops the run with a clear message, and nobody is marked failed.
+   - A dropped connection reconnects and retries once.
+   - Hitting Gmail's daily quota stops the run.
+   - A rejected address is logged as `failed` and the run continues.
+
+### Follow-ups, replies, analytics
+
+- `followup_sender.py` picks emails that were sent, never followed up, unanswered, and at least 7 days old. Each follow-up is a "Re:" email in the same Gmail thread with a 1–2 sentence AI value proposition, and the resume is attached again.
+- `imap_reply_detector.py` searches the inbox (read-only) since the oldest unanswered email, reads the sender headers in batches of 100, and marks matching recruiters `replied=1`.
+- `analytics.py` reports: recruiters scraped, emails sent, follow-ups, replies, reply rate, failures, daily sends over the last 14 days, top roles, and a breakdown per candidate.
+
+### Data files (spec section 4)
+
+- `recruiters.csv` columns: `recruiter_name, recruiter_email, role, post_url, job_description, email_sent_status (pending/sent/failed/mismatched_role), timestamp`.
+- `email_sent_history.csv` columns: `recruiter_name, recruiter_email, role, post_url, candidate, email_sent_status, timestamp, subject, message_id, followup_count, last_followup_at, replied`.
+
+Missing columns are added automatically. Files edited and re-saved in Excel still load correctly. If a file is open in Excel while the tool writes to it, you get a "close it in Excel" message and no data is lost.
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `main.py` | Menu, `--check`, batch mode and orchestration. |
+| `client_config.py` | Candidates, roles, exclusions, bench phrases, role domains. |
+| `linkedin_login.py`, `linkedin_scraper.py` | LinkedIn login, search, extraction and filters. |
+| `gmail_sender.py`, `followup_sender.py`, `imap_reply_detector.py` | Email sending, follow-ups and reply detection. |
+| `resume_customizer.py`, `llm_client.py`, `lock_util.py` | Resume tailoring, the AI provider chain and the Word lock. |
+| `analytics.py`, `csv_store.py`, `settings.py` | Dashboard, CSV databases, and `.env`/paths. |
+| `templates/` | Outreach and follow-up email text. |
+| `clients/` | Resumes (git-ignored, except the sample). |
+| `scratch/` | Temporary files. |
+
+### Adding a client-specific resume parser (spec section 8.2)
+
+1. Write `<client>_customizer.py` with a `customize(candidate, resume_path, job_description, role)` function. It can call `resume_customizer.customize(..., parser=my_parser)` to reuse the standard pipeline with its own section parsing.
+2. Register it in `gmail_sender.CUSTOMIZERS`.
+3. Set `CLIENTS[key]["customizer"]` to its name.
+
+---
+
+## 4. Tests
 
 ```bash
+pip install -r requirements.txt
 pytest
 ```
 
-There are 57 tests, and none of them need network access:
+There are 106 tests, and none of them need network access:
 
-- **Browser end-to-end tests** run against a fake LinkedIn: login, wrong password, CAPTCHA checkpoint, scraping with every filter case, and the Copy-link clipboard path.
-- **A full batch-mode run** goes through login, scrape, filter, real DOCX→PDF resume conversion, send, CSV logging and analytics.
-- **Resume tailoring tests** check that font, size, italics, colour and bold labels are preserved, and that the text really appears in the generated PDF.
-- **A real SMTP exchange** against a local mail server checks that BCC goes only in the envelope.
-- **Other tests** cover the SMTP 587→465 fallback, threaded follow-up headers, IMAP batching and reply marking, the AI provider fallback chain, CSV header migration, and the lock file.
+- **Demo walkthrough:** drives the real menu through options 2→3→4→5 (test)→5 (live)→6→7→8→9→1. Only LinkedIn, Gmail and the inbox are simulated.
+- **Browser tests** against a mock LinkedIn page:
+  - login, including LinkedIn's `login-submit` redirect
+  - wrong password, CAPTCHA checkpoint, session reuse, expired session
+  - "…more" expansion and "Copy link to post"
+  - all filter cases, and the fallback for a new page layout
+- **Failure-mode tests:**
+  - wrong Gmail password, Gmail unreachable on both ports, dropped connection, Gmail quota, rejected address
+  - resume crash fallback, corrupt resume
+  - CSV files saved by Excel (UTF-8 with BOM, and ANSI), a CSV locked by Excel
+  - Windows Word retry, LibreOffice timeout, English IMAP dates on any locale
+- **15 realistic LinkedIn C2C posts** (requirements, hotlists, India/Canada/UK posts, QA/DevOps/Salesforce titles), each with its expected outcome.
+- **Real document and mail tests:**
+  - real DOCX→PDF conversion, checking that the tailored text is in the PDF
+  - a real SMTP exchange with a local mail server, checking that BCC is only in the envelope
+  - threaded follow-up headers, IMAP batching, the AI fallback chain, CSV header migration
 
 ## Notes
 
-- LinkedIn changes its page structure often. All selectors are in `SELECTORS` in `linkedin_scraper.py` and have fallbacks. Update them there if scraping stops finding posts.
-- Automating LinkedIn breaks its User Agreement and can get the account restricted. Keep volumes modest and use your daily limit.
-- Gmail limits personal accounts to about 500 recipients per day. CC and BCC addresses count toward that.
+- LinkedIn changes its page structure often. All selectors are in `SELECTORS` at the top of `linkedin_scraper.py`.
+- Automating LinkedIn breaks its User Agreement and can get the account restricted. Keep volumes modest and use the daily limit.
+- Gmail allows about 500 recipients per day on personal accounts. CC and BCC addresses count toward that.
+- On Windows, a failed Word conversion closes all open Word windows (`taskkill`) before retrying, so save your Word documents before running.

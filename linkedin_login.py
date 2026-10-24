@@ -53,14 +53,24 @@ def browser_context(headless: bool = True, use_session: bool = True):
             browser.close()
 
 
+def has_session_cookie(page: Page) -> bool:
+    """li_at is LinkedIn's authentication cookie; it only exists for a signed-in browser."""
+    return any(c["name"] == "li_at" and c["value"] for c in page.context.cookies(LINKEDIN))
+
+
+def _on_logged_in_page(page: Page) -> bool:
+    url = page.url
+    return ("linkedin.com" in url and not any(m in url for m in _LOGGED_OUT_MARKERS)
+            and page.query_selector(LOGIN_FORM) is None)
+
+
 def is_logged_in(page: Page, navigate: bool = True) -> bool:
     if navigate:
         page.goto(f"{LINKEDIN}/feed/", wait_until="domcontentloaded")
-    url = page.url
-    if "linkedin.com" not in url or any(m in url for m in _LOGGED_OUT_MARKERS):
+    if not _on_logged_in_page(page):
         return False
-    if page.query_selector(LOGIN_FORM):
-        return False
+    if has_session_cookie(page):
+        return True
     try:
         page.wait_for_selector(GLOBAL_NAV, timeout=8000)
         return True
@@ -100,20 +110,28 @@ def login(context: BrowserContext, page: Page, headless: bool, checkpoint_timeou
     save_session(context)
 
 
+def _is_checkpoint(url: str) -> bool:
+    # /checkpoint/lg/login-submit is the normal login POST on its way to the feed, not a challenge
+    return any(m in url for m in _CHECKPOINT_MARKERS) and "login-submit" not in url
+
+
 def _wait_for_feed(page: Page, headless: bool, timeout: float) -> None:
-    deadline = time.time() + (30 if headless else timeout)
-    warned = False
+    deadline = time.time() + (45 if headless else timeout)
+    checkpoint_since = None
     while time.time() < deadline:
         url = page.url
-        if any(m in url for m in _CHECKPOINT_MARKERS):
-            if headless:
+        if _is_checkpoint(url):
+            if checkpoint_since is None:
+                checkpoint_since = time.time()
+                if not headless:
+                    log.warning("Complete the LinkedIn security check (CAPTCHA/2FA/PIN) in the browser window...")
+            elif headless and time.time() - checkpoint_since > 4:
                 raise LoginError("LinkedIn security checkpoint (CAPTCHA/2FA). Run main.py option 2 "
                                  "to complete it once in a visible browser.")
-            if not warned:
-                log.warning("Complete the LinkedIn security check in the browser window...")
-                warned = True
-        elif "/feed" in url and page.query_selector(GLOBAL_NAV):
-            return
+        else:
+            checkpoint_since = None
+            if _on_logged_in_page(page) and (has_session_cookie(page) or page.query_selector(GLOBAL_NAV)):
+                return
         for sel in ("#error-for-password", "#error-for-username"):
             el = page.query_selector(sel)
             if el and el.is_visible() and el.inner_text().strip():

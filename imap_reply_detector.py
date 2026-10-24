@@ -28,8 +28,12 @@ def search_since(now: datetime | None = None) -> datetime:
     return min(pending) if pending else (now or datetime.now()) - timedelta(days=DEFAULT_LOOKBACK_DAYS)
 
 
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
 def imap_date(dt: datetime) -> str:
-    return dt.strftime("%d-%b-%Y")  # SINCE 12-Jun-2026
+    """SINCE 12-Jun-2026. Month names are fixed English: strftime('%b') is locale-dependent on Windows."""
+    return f"{dt.day:02d}-{_MONTHS[dt.month - 1]}-{dt.year}"
 
 
 def fetch_sender_addresses(conn, since: datetime) -> set[str]:

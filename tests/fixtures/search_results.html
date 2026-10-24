@@ -11,12 +11,14 @@
       <span class="update-components-actor__title"><span aria-hidden="true">John Smith (He/Him)</span></span>
     </a>
   </div>
+  <button class="feed-shared-inline-show-more-text__see-more-less-toggle" aria-expanded="false"
+          onclick="toggleMore(this)">…more</button>
   <div class="update-components-text"><span dir="ltr">Urgent Requirement!<br>
 Job Title: Senior Java Developer<br>
 Location: Dallas, TX (Hybrid)<br>
 C2C - 12 months. Visa: H1B, GC, USC<br>
 Java 17, Spring Boot, Microservices, Kafka, AWS, PostgreSQL. Spring Boot is a must.<br>
-Send resumes: <a href="mailto:John.Smith@TechCorp.com?subject=Java">here</a></span></div>
+<span class="hidden-tail" style="display:none">Send resumes: <a href="mailto:John.Smith@TechCorp.com?subject=Java">John Smith</a></span></span></div>
 </div>
 
 <!-- 2. Valid US post WITHOUT data-urn: link resolved through the three-dots "Copy link" menu -->
@@ -32,7 +34,7 @@ Remote (US only) - C2C contract, Angular + Java + Spring Boot.<br>
 Email maria [at] staffhub [dot] com</span></div>
 </div>
 <div id="menu" role="menu" style="display:none">
-  <div role="button" onclick="copyLink()"><span>Copy link</span></div>
+  <div role="button" onclick="copyLink()"><span>Copy link to post</span></div>
 </div>
 
 <!-- 3. Bench marketer -->
@@ -56,11 +58,19 @@ Email maria [at] staffhub [dot] com</span></div>
 <!-- 6. No email: ignored -->
 <div class="feed-shared-update-v2" data-urn="urn:li:activity:7100000000000000006">
   <a class="update-components-actor__meta-link" href="https://www.linkedin.com/in/no-email"><span class="update-components-actor__title">No Email</span></a>
-  <div class="update-components-text"><span dir="ltr">Java Developer C2C in Chicago, IL. DM me.</span></div>
+  <div class="update-components-text"><span dir="ltr">Java Developer C2C in Chicago, IL. DM me or copy link and share.</span></div>
 </div>
 
 </main>
 <script>
+window.toggleCount = 0;
+function toggleMore(btn) {
+  window.toggleCount++;
+  const expanded = btn.getAttribute('aria-expanded') === 'true';
+  btn.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+  btn.innerText = expanded ? '…more' : '…see less';
+  btn.parentElement.querySelector('.hidden-tail').style.display = expanded ? 'none' : 'inline';
+}
 function openMenu() { document.getElementById('menu').style.display = 'block'; }
 async function copyLink() {
   await navigator.clipboard.writeText('https://www.linkedin.com/posts/maria-garcia-77_java-c2c-activity-7100000000000000002-AbCd?utm_source=share&utm_medium=member_desktop');

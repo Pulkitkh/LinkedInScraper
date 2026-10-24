@@ -6,7 +6,6 @@ import logging
 import mimetypes
 import re
 import smtplib
-import socket
 import string
 import time
 import unicodedata
@@ -146,19 +145,78 @@ def build_message(*, sender: str, sender_name: str, to: str, subject: str, body:
     return msg
 
 
+class SendAborted(RuntimeError):
+    """Stops a whole sending run: bad Gmail credentials, unreachable server, or daily quota exhausted."""
+
+
 def smtp_connect(timeout: float = 30) -> smtplib.SMTP:
     """STARTTLS on 587; if blocked or timed out, SSL on 465. Authenticates with the Gmail app password."""
     user, password = settings.env("GMAIL_EMAIL"), settings.env("GMAIL_APP_PASSWORD").replace(" ", "")
     if not (user and password):
-        raise RuntimeError("Set GMAIL_EMAIL and GMAIL_APP_PASSWORD in .env")
+        raise SendAborted("Set GMAIL_EMAIL and GMAIL_APP_PASSWORD in .env")
     try:
         server = smtplib.SMTP(SMTP_HOST, 587, timeout=timeout)
         server.starttls()
-    except (OSError, socket.timeout, smtplib.SMTPException) as exc:
+    except (OSError, smtplib.SMTPException) as exc:
         log.warning("SMTP 587/STARTTLS failed (%s); falling back to 465/SSL", exc)
-        server = smtplib.SMTP_SSL(SMTP_HOST, 465, timeout=timeout)
-    server.login(user, password)
+        try:
+            server = smtplib.SMTP_SSL(SMTP_HOST, 465, timeout=timeout)
+        except (OSError, smtplib.SMTPException) as exc2:
+            raise SendAborted(f"Cannot reach {SMTP_HOST} on 587 or 465: {exc2}") from exc2
+    try:
+        server.login(user, password)
+    except smtplib.SMTPAuthenticationError as exc:
+        raise SendAborted("Gmail rejected the login. Use a 16-character App Password (2-Step Verification "
+                          "must be on) in GMAIL_APP_PASSWORD.") from exc
     return server
+
+
+def is_quota_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "quota" in text or "limit exceeded" in text or "5.4.5" in text
+
+
+class SmtpSession:
+    """Lazy SMTP connection that reconnects once if Gmail drops it between messages."""
+
+    def __init__(self, factory):
+        self.factory = factory
+        self.server = None
+
+    def send(self, msg: EmailMessage) -> None:
+        for attempt in (1, 2):
+            if self.server is None:
+                self.server = self.factory()  # SendAborted propagates
+            try:
+                self.server.send_message(msg)
+                return
+            except smtplib.SMTPServerDisconnected:
+                self.server = None
+                if attempt == 2:
+                    raise
+
+    def close(self) -> None:
+        if self.server:
+            try:
+                self.server.quit()
+            except (smtplib.SMTPException, OSError):
+                pass
+            self.server = None
+
+
+def deliver(session: SmtpSession, msg: EmailMessage) -> tuple[str, str, bool]:
+    """Send one message. Returns (status, note, stop_run)."""
+    try:
+        session.send(msg)
+        return "sent", "", False
+    except SendAborted:
+        raise
+    except (smtplib.SMTPException, OSError) as exc:
+        if isinstance(exc, OSError):  # network dropped: reconnect on the next message
+            session.server = None
+        quota = is_quota_error(exc)
+        log.error("Send to %s failed: %s", msg["To"], exc)
+        return "failed", ("Gmail sending quota reached: " if quota else "") + str(exc), quota
 
 
 # ------------------------------------------------------------------ resume dispatch
@@ -167,16 +225,12 @@ def _default_customizer(candidate, resume_path, job_description, role):
     return resume_customizer.customize(resume_path, job_description, role, candidate)
 
 
-def _example_customizer(candidate, resume_path, job_description, role):
-    import example_client_customizer
-
-    return example_client_customizer.customize(candidate, resume_path, job_description, role)
-
-
-# Register client-specific customizers here; select one with CLIENTS[key]["customizer"].
+# Register client-specific customizers here and select one with CLIENTS[key]["customizer"], e.g.
+#   import safi_customizer;  CUSTOMIZERS["safi"] = safi_customizer.customize
+# A customizer takes (candidate, resume_path, job_description, role) and returns a CustomizationResult;
+# resume_customizer.customize(..., parser=my_parser) lets it reuse the standard pipeline with its own parsing.
 CUSTOMIZERS = {
     "default": _default_customizer,
-    "example": _example_customizer,
 }
 
 
@@ -196,6 +250,7 @@ class OutreachReport:
     failed: int = 0
     skipped: int = 0
     details: list[tuple[str, str, str]] = field(default_factory=list)  # (email, status, note)
+    aborted: str = ""  # why the run stopped early, if it did
 
 
 def sent_today() -> int:
@@ -222,7 +277,8 @@ def send_outreach(candidate_key: str, mode: str = "test", limit: int | None = No
     subject_tpl, body_tpl = load_template("outreach_email.txt")
     cc, bcc = recipients_for(candidate)
     report = OutreachReport()
-    server = None
+    session = SmtpSession(smtp_factory)
+    live = mode == "live"
     try:
         for rec in recruiters:
             email = rec["recruiter_email"].strip().lower()
@@ -230,7 +286,7 @@ def send_outreach(candidate_key: str, mode: str = "test", limit: int | None = No
                 report.skipped += 1
                 report.details.append((email, "skipped", "limit reached"))
                 continue
-            if mode == "live" and already_contacted(email, candidate["name"]):
+            if live and already_contacted(email, candidate["name"]):
                 report.skipped += 1
                 report.details.append((email, "skipped", "already contacted by this candidate"))
                 continue
@@ -240,26 +296,18 @@ def send_outreach(candidate_key: str, mode: str = "test", limit: int | None = No
                                      top_skills=", ".join(keywords))
             subject = render(subject_tpl or "{job_title} (C2C) - {candidate_name}", values)
             body = render(body_tpl, values)
-            result = customize(candidate, rec.get("job_description", ""), rec.get("role") or candidate["primary_role"])
-            live = mode == "live"
+            attachment, resume_note = _resume_for(customize, candidate, rec)
             msg = build_message(
                 sender=sender, sender_name=candidate["name"], to=email if live else sender,
                 subject=subject if live else f"[TEST -> {email}] {subject}", body=body,
-                attachment=result.path, attachment_name=attachment_filename(candidate["name"], result.path.suffix),
+                attachment=attachment, attachment_name=attachment_filename(candidate["name"], attachment.suffix),
                 cc=cc if live else [], bcc=bcc if live else [],
             )
 
             if report.sent or report.failed:
                 sleep(SEND_DELAY_SECONDS)
-            try:
-                server = server or smtp_factory()
-                server.send_message(msg)
-                status, note = "sent", result.note
-            except (smtplib.SMTPException, OSError) as exc:
-                log.error("Send to %s failed: %s", email, exc)
-                status, note = "failed", str(exc)
-                server = None
-
+            status, error, stop = deliver(session, msg)
+            note = error or resume_note
             report.details.append((email, status, note))
             if status == "sent":
                 report.sent += 1
@@ -268,13 +316,31 @@ def send_outreach(candidate_key: str, mode: str = "test", limit: int | None = No
             if live:
                 _record(rec, candidate, status, subject, msg["Message-ID"])
             log.info("%s %s -> %s (%s)", mode.upper(), status, email, note)
+            if stop:
+                report.aborted = note
+                break
+    except SendAborted as exc:
+        report.aborted = str(exc)
+        log.error("Sending stopped: %s", exc)
     finally:
-        if server:
-            try:
-                server.quit()
-            except (smtplib.SMTPException, OSError):
-                pass
+        session.close()
     return report
+
+
+def _resume_for(customize, candidate: dict, rec: dict) -> tuple[Path, str]:
+    """Tailored resume, or the original one if tailoring/conversion fails for any reason."""
+    try:
+        result = customize(candidate, rec.get("job_description", ""), rec.get("role") or candidate["primary_role"])
+        return result.path, result.note
+    except Exception as exc:  # never let one resume problem stop the outreach run
+        log.exception("Resume customization failed; attaching the original resume")
+        original = client_config.resolve_resume(candidate)
+        if original is None:
+            raise SendAborted(f"No resume file for {candidate['name']}") from exc
+        try:
+            return resume_customizer.ensure_pdf(original), f"original resume attached ({exc})"
+        except Exception:
+            return original, f"original resume attached ({exc})"
 
 
 def _record(rec: dict, candidate: dict, status: str, subject: str, message_id: str) -> None:

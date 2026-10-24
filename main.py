@@ -151,6 +151,8 @@ def show_report(title: str, report) -> None:
     for email, status, note in report.details:
         if status != "sent":
             console.print(f"  [yellow]{status}[/] {email} {note}")
+    if report.aborted:
+        console.print(f"[bold red]Stopped early:[/] {report.aborted}")
 
 
 def remaining_today(limit: int) -> int:
@@ -186,7 +188,10 @@ def run_batch(mode: str, daily_limit: int, assume_yes: bool = False, headless: b
             if problems:
                 console.print("[red]Skipping:[/] " + "; ".join(problems))
                 continue
-            linkedin_scraper.scrape_candidate(key, page=page)
+            try:
+                linkedin_scraper.scrape_candidate(key, page=page)
+            except Exception as exc:  # one bad search must not stop the other candidates
+                log.exception("Scraping failed for %s: %s", key, exc)
             budget = remaining_today(daily_limit) if mode == "live" else daily_limit
             if budget <= 0:
                 console.print("[yellow]Daily limit reached; scraping only.[/]")
@@ -194,7 +199,11 @@ def run_batch(mode: str, daily_limit: int, assume_yes: bool = False, headless: b
             rows = linkedin_scraper.pending_recruiters(key)
             console.print(f"{len(rows)} pending recruiter(s); sending up to {budget}")
             if rows:
-                show_report(key, gmail_sender.send_outreach(key, mode=mode, limit=budget, recruiters=rows))
+                report = gmail_sender.send_outreach(key, mode=mode, limit=budget, recruiters=rows)
+                show_report(key, report)
+                if report.aborted:
+                    console.print("[red]Stopping the batch - fix the problem above and run again.[/]")
+                    break
     console.print(f"Analytics: {analytics.export_report()}")
 
 
@@ -256,20 +265,26 @@ def main(argv: list[str] | None = None) -> int:
 
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(message)s",
                         handlers=[RichHandler(console=console, show_path=False)])
-    if args.check:
-        problems = validate_setup()
-        for p in problems:
-            console.print(f"[yellow]-[/] {p}")
-        return 0 if show_checks(check_connections()) else 1
-    if args.check_replies:
-        imap_reply_detector.check_replies()
-    if args.followups:
-        if confirm_send(args.mode, len(followup_sender.eligible_followups()), args.yes):
-            show_report("Follow-ups", followup_sender.send_followups(mode=args.mode, limit=args.limit))
-    if args.batch:
-        run_batch(args.mode, args.limit, args.yes)
-    if not (args.batch or args.followups or args.check_replies or args.check):
-        interactive()
+    try:
+        if args.check:
+            for problem in validate_setup():
+                console.print(f"[yellow]-[/] {problem}")
+            return 0 if show_checks(check_connections()) else 1
+        if args.check_replies:
+            console.print(f"{imap_reply_detector.check_replies()} new replies detected.")
+        if args.followups:
+            if confirm_send(args.mode, len(followup_sender.eligible_followups()), args.yes):
+                show_report("Follow-ups", followup_sender.send_followups(mode=args.mode, limit=args.limit))
+        if args.batch:
+            run_batch(args.mode, args.limit, args.yes)
+        if not (args.batch or args.followups or args.check_replies):
+            interactive()
+    except KeyboardInterrupt:
+        console.print("\nStopped by user.")
+        return 130
+    except Exception as exc:
+        log.error("%s: %s", type(exc).__name__, exc, exc_info=args.verbose)
+        return 1
     return 0
 
 

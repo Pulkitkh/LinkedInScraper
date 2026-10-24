@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import smtplib
 import time
 from datetime import datetime, timedelta
 
@@ -63,6 +62,17 @@ def value_proposition(candidate: dict, job_description: str, generate=llm_client
         return fallback
 
 
+def _resume_pdf(candidate: dict):
+    resume = client_config.resolve_resume(candidate)
+    if resume is None:
+        return None
+    try:
+        return resume_customizer.ensure_pdf(resume)
+    except Exception:  # conversion problems must not block the follow-up
+        log.exception("PDF conversion failed; attaching %s as-is", resume.name)
+        return resume
+
+
 def _candidate_by_name(name: str) -> dict | None:
     for key in client_config.candidate_keys():
         c = client_config.get_candidate(key)
@@ -78,7 +88,8 @@ def send_followups(mode: str = "test", days: int = FOLLOWUP_AFTER_DAYS, limit: i
     smtp_factory = smtp_factory or gmail_sender.smtp_connect
     sender = settings.env("GMAIL_EMAIL")
     _, body_tpl = load_template("followup_email.txt")
-    server = None
+    session = gmail_sender.SmtpSession(smtp_factory)
+    live = mode == "live"
     try:
         for row in eligible_followups(days, now):
             email = row["recruiter_email"]
@@ -91,15 +102,13 @@ def send_followups(mode: str = "test", days: int = FOLLOWUP_AFTER_DAYS, limit: i
                 report.skipped += 1
                 report.details.append((email, "skipped", "limit reached"))
                 continue
-            resume = client_config.resolve_resume(candidate)
             jd = _job_description(row["post_url"])
             values = template_values({**row, "job_description": jd}, candidate,
                                      value_prop=value_proposition(candidate, jd, generate))
             body = render(body_tpl, values)
             original = row["subject"] or f"{values['job_title']} (C2C) - {candidate['name']}"
             subject = original if original.lower().startswith("re:") else f"Re: {original}"
-            attachment = resume_customizer.ensure_pdf(resume) if resume else None
-            live = mode == "live"
+            attachment = _resume_pdf(candidate)
             cc, bcc = recipients_for(candidate)
             msg = build_message(
                 sender=sender, sender_name=candidate["name"], to=email if live else sender,
@@ -110,17 +119,15 @@ def send_followups(mode: str = "test", days: int = FOLLOWUP_AFTER_DAYS, limit: i
             )
             if report.sent or report.failed:
                 sleep(SEND_DELAY_SECONDS)
-            try:
-                server = server or smtp_factory()
-                server.send_message(msg)
-            except (smtplib.SMTPException, OSError) as exc:
-                log.error("Follow-up to %s failed: %s", email, exc)
+            status, error, stop = gmail_sender.deliver(session, msg)
+            report.details.append((email, status, error or "follow-up"))
+            if status != "sent":
                 report.failed += 1
-                report.details.append((email, "failed", str(exc)))
-                server = None
+                if stop:
+                    report.aborted = error
+                    break
                 continue
             report.sent += 1
-            report.details.append((email, "sent", "follow-up"))
             if live:
                 csv_store.update_rows(
                     settings.history_csv(), csv_store.HISTORY_FIELDS,
@@ -129,10 +136,9 @@ def send_followups(mode: str = "test", days: int = FOLLOWUP_AFTER_DAYS, limit: i
                                "last_followup_at": csv_store.now()},
                 )
             log.info("%s follow-up sent -> %s", mode.upper(), email)
+    except gmail_sender.SendAborted as exc:
+        report.aborted = str(exc)
+        log.error("Follow-ups stopped: %s", exc)
     finally:
-        if server:
-            try:
-                server.quit()
-            except (smtplib.SMTPException, OSError):
-                pass
+        session.close()
     return report

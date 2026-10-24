@@ -18,6 +18,7 @@ log = logging.getLogger(__name__)
 
 SEARCH_URL = f"{LINKEDIN}/search/results/content/"
 MAX_SCROLLS = 6
+CARD_WAIT_MS = 15000  # how long to wait for post cards before trying the generic fallback
 
 # LinkedIn markup changes often; each field has fallbacks (first match wins).
 SELECTORS = {
@@ -26,12 +27,33 @@ SELECTORS = {
         'div[data-id^="urn:li:activity:"], div.feed-shared-update-v2:not([data-urn]), '
         'div[data-view-name="feed-full-update"]'
     ),
-    "see_more": "button.feed-shared-inline-show-more-text__see-more-less-toggle, "
-                "button[aria-label*='see more' i], button:has-text('…more')",
+    # Used only when none of the card selectors match (LinkedIn layout change): plain result list items.
+    "fallback_card": "main ul > li",
     "control_menu": "button[aria-label*='control menu for post' i], button.feed-shared-control-menu__trigger",
-    "copy_link": "[role='menu'] :text-is('Copy link'), .feed-shared-control-menu__item:has-text('Copy link'), "
-                 "div[role='button']:has-text('Copy link'), li:has-text('Copy link')",
+    # LinkedIn labels it "Copy link to post"; scoped to menus so a post mentioning "copy link" never matches.
+    "copy_link": "[role='menu'] [role='menuitem']:has-text('Copy link'), "
+                 "[role='menu'] [role='button']:has-text('Copy link'), "
+                 ".feed-shared-control-menu__item:has-text('Copy link'), "
+                 ".artdeco-dropdown__content-inner li:has-text('Copy link')",
+    "show_more_results": "button.scaffold-finite-scroll__load-button",
 }
+
+# Clicks only collapsed "…more" toggles (the same button turns into "…less" once expanded).
+EXPAND_JS = r"""
+() => {
+  let clicked = 0;
+  for (const b of document.querySelectorAll('button')) {
+    const label = ((b.getAttribute('aria-label') || '') + ' ' + b.innerText).toLowerCase();
+    const isToggle = b.classList.contains('feed-shared-inline-show-more-text__see-more-less-toggle')
+      || /see more|…more|\.\.\.more/.test(label);
+    if (isToggle && !/less/.test(label) && b.getAttribute('aria-expanded') !== 'true') {
+      b.click();
+      clicked++;
+    }
+  }
+  return clicked;
+}
+"""
 
 CARD_JS = """
 (node) => {
@@ -206,11 +228,10 @@ def build_search_url(query: str) -> str:
 
 
 def _expand_see_more(page: Page) -> None:
-    for btn in page.query_selector_all(SELECTORS["see_more"]):
-        try:
-            btn.click(force=True, timeout=1500)
-        except Exception:  # detached or covered; the full text is usually already in the DOM
-            pass
+    try:
+        page.evaluate(EXPAND_JS)
+    except Exception:  # navigation in progress; the full text is usually in the DOM anyway
+        pass
 
 
 def copy_post_link(page: Page, card: ElementHandle) -> str:
@@ -241,19 +262,29 @@ def scrape_role(page: Page, role: str, exclusions: list[str], max_scrolls: int =
     log.info("Searching LinkedIn: %s", query)
     page.goto(build_search_url(query), wait_until="domcontentloaded")
     try:
-        page.wait_for_selector(SELECTORS["card"], timeout=15000)
+        page.wait_for_selector(SELECTORS["card"], timeout=CARD_WAIT_MS)
     except Exception:
-        log.warning("No posts found for %r", role)
-        return []
+        if not page.query_selector(SELECTORS["fallback_card"]):
+            log.warning("No posts found for %r", role)
+            return []
 
     for _ in range(max_scrolls):
         _expand_see_more(page)
         page.mouse.wheel(0, 2500)
         human_pause(*pause)
+        more = page.query_selector(SELECTORS["show_more_results"])
+        if more and more.is_visible():
+            more.click()
+            human_pause(*pause)
     _expand_see_more(page)
 
+    handles = page.query_selector_all(SELECTORS["card"])
+    if not handles:
+        log.warning("Post cards not recognised (LinkedIn layout changed?) - using generic result items")
+        handles = page.query_selector_all(SELECTORS["fallback_card"])
+
     cards: dict[str, dict] = {}
-    for handle in page.query_selector_all(SELECTORS["card"]):
+    for handle in handles:
         data = handle.evaluate(CARD_JS)
         emails = extract_emails(data["text"], data["mailtos"])
         if not emails:

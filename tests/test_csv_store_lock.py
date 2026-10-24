@@ -13,7 +13,7 @@ def test_migrate_adds_missing_columns(tmp_path):
     path = tmp_path / "email_sent_history.csv"
     path.write_text("recruiter_email,candidate,email_sent_status\nx@y.com,Jane,sent\n")
     assert csv_store.migrate(path, csv_store.HISTORY_FIELDS)
-    with open(path, newline="") as fh:
+    with open(path, newline="", encoding="utf-8-sig") as fh:
         reader = csv.DictReader(fh)
         assert reader.fieldnames == csv_store.HISTORY_FIELDS
         row = next(reader)

@@ -12,8 +12,8 @@ function submitLogin() {
   const u = document.getElementById('username').value;
   const p = document.getElementById('password').value;
   if (u === 'operator@example.com' && p === 'correct-password') {
-    document.cookie = 'li_at=fake-session; path=/';
-    window.location.href = '/feed/';
+    // Real LinkedIn posts the form to /checkpoint/lg/login-submit, which then redirects to the feed.
+    window.location.href = '/checkpoint/lg/login-submit';
   } else if (u === 'needs2fa@example.com') {
     window.location.href = '/checkpoint/challenge/abc';
   } else {

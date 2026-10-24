@@ -6,6 +6,7 @@ import csv
 import os
 import tempfile
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -21,6 +22,21 @@ DEFAULTS = {"followup_count": "0", "replied": "0", "email_sent_status": "pending
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 _lock = threading.Lock()
+csv.field_size_limit(10_000_000)  # long job descriptions
+
+
+class CsvLockedError(RuntimeError):
+    pass
+
+
+def _open_for_read(path: Path):
+    """UTF-8 (with or without the BOM Excel adds); falls back to Windows-1252 for files re-saved by Excel."""
+    try:
+        with open(path, encoding="utf-8-sig") as fh:
+            fh.read()
+        return open(path, newline="", encoding="utf-8-sig")
+    except UnicodeDecodeError:
+        return open(path, newline="", encoding="cp1252")
 
 
 def now() -> str:
@@ -38,7 +54,7 @@ def read_rows(path: Path, fields: list[str]) -> list[dict]:
     """Read every row, adding any missing columns with defaults so older files keep working."""
     if not path.exists():
         return []
-    with open(path, newline="", encoding="utf-8") as fh:
+    with _open_for_read(path) as fh:
         rows = list(csv.DictReader(fh))
     for row in rows:
         for field in fields:
@@ -53,12 +69,20 @@ def write_rows(path: Path, fields: list[str], rows: list[dict]) -> None:
     extra = [k for row in rows for k in row if k not in fields and k is not None]
     header = fields + list(dict.fromkeys(extra))
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-    with os.fdopen(fd, "w", newline="", encoding="utf-8") as fh:
+    # utf-8-sig so Excel shows non-English characters correctly
+    with os.fdopen(fd, "w", newline="", encoding="utf-8-sig") as fh:
         writer = csv.DictWriter(fh, fieldnames=header, extrasaction="ignore")
         writer.writeheader()
         for row in rows:
             writer.writerow({k: row.get(k, DEFAULTS.get(k, "")) for k in header})
-    os.replace(tmp, path)
+    for _ in range(10):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:  # Windows: the file is open in Excel
+            time.sleep(1)
+    os.unlink(tmp)
+    raise CsvLockedError(f"{path.name} is locked by another program (close it in Excel) - nothing was lost, retry")
 
 
 def migrate(path: Path, fields: list[str]) -> bool:
@@ -66,7 +90,7 @@ def migrate(path: Path, fields: list[str]) -> bool:
     if not path.exists():
         write_rows(path, fields, [])
         return True
-    with open(path, newline="", encoding="utf-8") as fh:
+    with _open_for_read(path) as fh:
         header = next(csv.reader(fh), [])
     if all(f in header for f in fields):
         return False

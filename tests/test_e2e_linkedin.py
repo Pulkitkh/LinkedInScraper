@@ -28,15 +28,22 @@ def _browser_available() -> bool:
 pytestmark = pytest.mark.skipif(not _browser_available(), reason="Chromium not installed (playwright install chromium)")
 
 
+LOGIN_SUBMIT = ("<p>Signing in...</p><script>document.cookie = 'li_at=fake-session; path=/';"
+                "setTimeout(() => location.href = '/feed/', 800);</script>")
+
+
 class FakeLinkedIn:
-    def __init__(self):
+    def __init__(self, search_fixture="search_results.html"):
         self.search_urls = []
+        self.search_fixture = search_fixture
 
     def handle(self, route):
         req = route.request
         path = urlparse(req.url).path
         logged_in = "li_at=" in (req.headers.get("cookie") or "")
-        if path.startswith("/login"):
+        if path.startswith("/checkpoint/lg/login-submit"):
+            route.fulfill(content_type="text/html", body=LOGIN_SUBMIT)
+        elif path.startswith("/login"):
             route.fulfill(content_type="text/html", body=(FIXTURES / "login.html").read_text())
         elif path.startswith("/checkpoint"):
             route.fulfill(content_type="text/html", body="<h1>Verify it's you</h1>")
@@ -47,7 +54,7 @@ class FakeLinkedIn:
             route.fulfill(content_type="text/html", body="<header id='global-nav'>nav</header><main>Feed</main>")
         elif path.startswith("/search/results/content"):
             self.search_urls.append(req.url)
-            route.fulfill(content_type="text/html", body=(FIXTURES / "search_results.html").read_text())
+            route.fulfill(content_type="text/html", body=(FIXTURES / self.search_fixture).read_text())
         else:
             route.fulfill(status=404, body="")
 
@@ -102,6 +109,8 @@ def test_scrape_filters_and_saves_recruiters(browser):
     assert john["recruiter_name"] == "John Smith"
     assert john["post_url"] == "https://www.linkedin.com/feed/update/urn:li:activity:7100000000000000001/"
     assert "Senior Java Developer" in john["job_description"] and john["email_sent_status"] == "pending"
+    assert "Send resumes" in john["job_description"]  # text revealed by clicking "…more"
+    assert page.evaluate("window.toggleCount") == 1  # expanded once, never collapsed again
     # resolved through the three-dots menu + clipboard, query string stripped
     assert maria["post_url"] == "https://www.linkedin.com/posts/maria-garcia-77_java-c2c-activity-7100000000000000002-AbCd"
     assert amy["email_sent_status"] == "mismatched_role"
@@ -149,3 +158,37 @@ def test_full_batch_pipeline(workspace, monkeypatch):
     # a second batch the same day sends nothing new
     main.run_batch("live", daily_limit=10, assume_yes=True)
     assert len(server.sent) == 2
+
+
+def test_session_is_reused_without_logging_in_again(workspace, monkeypatch):
+    fake = FakeLinkedIn()
+    with linkedin_login.browser_context(headless=True) as (context, page):
+        context.route("https://www.linkedin.com/**", fake.handle)
+        linkedin_login.login(context, page, headless=True)
+    monkeypatch.setenv("LINKEDIN_PASSWORD", "wrong")  # would fail if it tried to log in again
+    with linkedin_login.browser_context(headless=True) as (context, page):  # loads session.json
+        context.route("https://www.linkedin.com/**", fake.handle)
+        linkedin_login.login(context, page, headless=True)
+        assert linkedin_login.is_logged_in(page)
+
+
+def test_expired_session_falls_back_to_credentials(workspace):
+    settings.session_file().write_text('{"cookies": [], "origins": []}')
+    fake = FakeLinkedIn()
+    with linkedin_login.browser_context(headless=True) as (context, page):
+        context.route("https://www.linkedin.com/**", fake.handle)
+        linkedin_login.login(context, page, headless=True)
+        assert linkedin_login.has_session_cookie(page)
+    assert "li_at" in settings.session_file().read_text()
+
+
+def test_unknown_layout_uses_generic_result_items(workspace, monkeypatch):
+    monkeypatch.setattr(linkedin_scraper, "CARD_WAIT_MS", 1500)
+    fake = FakeLinkedIn("search_results_new_layout.html")
+    with linkedin_login.browser_context(headless=True) as (context, page):
+        context.route("https://www.linkedin.com/**", fake.handle)
+        linkedin_login.login(context, page, headless=True)
+        stats = linkedin_scraper.scrape_candidate("jane", page=page, max_scrolls=0, pause=(0, 0))
+    assert stats["saved"] == 1
+    row = csv_store.read_rows(settings.recruiters_csv(), csv_store.RECRUITER_FIELDS)[0]
+    assert row["recruiter_email"] == "kate@nexgen.io" and row["recruiter_name"] == "Kate Wu"

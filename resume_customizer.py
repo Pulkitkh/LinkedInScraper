@@ -230,10 +230,10 @@ def docx_to_pdf(docx_path: Path) -> Path | None:
     """MS Word COM via docx2pdf (Windows/macOS) under a mutex; LibreOffice elsewhere. None if impossible."""
     pdf_path = docx_path.with_suffix(".pdf")
     if sys.platform in ("win32", "darwin"):
-        from docx2pdf import convert
-
         for attempt in (1, 2):
             try:
+                from docx2pdf import convert
+
                 with word_com_lock():
                     convert(str(docx_path), str(pdf_path))
                 if pdf_path.exists():
@@ -243,9 +243,12 @@ def docx_to_pdf(docx_path: Path) -> Path | None:
                 _kill_word()
     office = shutil.which("soffice") or shutil.which("libreoffice")
     if office:
-        with word_com_lock():
-            subprocess.run([office, "--headless", "--convert-to", "pdf", "--outdir", str(docx_path.parent),
-                            str(docx_path)], capture_output=True, timeout=180)
+        try:
+            with word_com_lock():
+                subprocess.run([office, "--headless", "--convert-to", "pdf", "--outdir", str(docx_path.parent),
+                                str(docx_path)], capture_output=True, timeout=180)
+        except (subprocess.SubprocessError, OSError) as exc:
+            log.warning("LibreOffice PDF conversion failed: %s", exc)
         if pdf_path.exists():
             return pdf_path
     log.warning("No PDF converter available (install MS Word or LibreOffice); sending DOCX")
